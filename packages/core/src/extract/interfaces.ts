@@ -8,10 +8,16 @@
  * about what the file contains, not a judgment call.
  *
  * Covers, in this slice: HTTP routes (Express/Fastify/Koa-style handler
- * calls + Next.js file-based routing), database tables (Prisma schema +
- * raw SQL CREATE TABLE), and external services (via known-package lookup
- * against already-extracted dependencies). Event-bus detection is a known
- * gap, not built yet — see ARCHITECTURE.md §11.
+ * calls, `router.route(x).get(...).post(...)` chains, + Next.js file-based
+ * routing), database tables (Prisma schema, raw SQL CREATE TABLE, and
+ * Mongoose `Schema`/`model()` pairs), and external services (via
+ * known-package lookup against already-extracted dependencies). Event-bus
+ * detection is a known gap, not built yet — see ARCHITECTURE.md §11.
+ *
+ * The chained-route and Mongoose detectors below were added in response to
+ * two real gaps found during the M3 blind-reconstruction experiment
+ * (ARCHITECTURE.md §16) — not hypothetical cases, an actual repo's routes and
+ * schema went undetected. See §16/§18 for what motivated each.
  */
 
 import * as fs from "node:fs";
@@ -39,6 +45,79 @@ function readSafe(root: string, relPath: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shared bracket-balancing helpers — used by the route-chain walker (parens)
+// and the Mongoose schema-object parser (braces). Not a real tokenizer, but
+// string/template-literal aware so a `)` or `,` inside a handler body or a
+// field's default-value string doesn't fool the depth count. Good enough for
+// a heuristic extractor (module doc); a mismatched-bracket case bails out
+// (-1) rather than guessing.
+// ---------------------------------------------------------------------------
+
+const CLOSE_FOR: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** Returns the index just after the bracket that matches `content[openIndex]`, or -1 if unbalanced before EOF. */
+function skipBalanced(content: string, openIndex: number): number {
+  const stack: string[] = [CLOSE_FOR[content[openIndex]]];
+  let inString: string | null = null;
+  for (let i = openIndex + 1; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      stack.push(CLOSE_FOR[ch]);
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      if (stack[stack.length - 1] !== ch) return -1; // mismatched — bail rather than guess
+      stack.pop();
+      if (stack.length === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** Splits `content` on `separator`, but only where bracket depth is 0 — so a nested object's commas don't split a field list apart. */
+function splitTopLevel(content: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  let inString: string | null = null;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth--;
+    else if (ch === separator && depth === 0) {
+      parts.push(content.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(content.slice(start));
+  return parts;
+}
+
+// ---------------------------------------------------------------------------
 // API endpoints
 // ---------------------------------------------------------------------------
 
@@ -61,6 +140,42 @@ function detectExpressStyleRoutes(root: string, files: string[]): ApiHit[] {
     let m: RegExpExecArray | null;
     while ((m = ROUTE_CALL_RE.exec(content)) !== null) {
       hits.push({ method: m[1].toUpperCase(), routePath: m[3], file: rel, line: lineAt(content, m.index) });
+    }
+  }
+  return hits;
+}
+
+const ROUTE_CHAIN_START_RE = /\b(?:app|router)\s*\.\s*route\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1\s*\)/g;
+const CHAIN_METHOD_RE = /^\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(/i;
+
+/**
+ * `router.route('/x').get(h1).post(h2)` — one `.route()` call binds a path,
+ * then each chained `.verb(...)` registers a handler for it (ARCHITECTURE.md
+ * §16 finding: the plain call-per-verb regex above matches none of these).
+ * Walks the chain call-by-call using `skipBalanced` to jump over each
+ * handler's argument list, so a handler body containing `.get(` or `,` can't
+ * derail the walk.
+ */
+function detectChainedRoutes(root: string, files: string[]): ApiHit[] {
+  const hits: ApiHit[] = [];
+  for (const rel of files) {
+    const content = readSafe(root, rel);
+    if (!content) continue;
+    ROUTE_CHAIN_START_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ROUTE_CHAIN_START_RE.exec(content)) !== null) {
+      const routePath = m[2];
+      let pos = ROUTE_CHAIN_START_RE.lastIndex;
+      while (true) {
+        const methodMatch = CHAIN_METHOD_RE.exec(content.slice(pos));
+        if (!methodMatch) break;
+        const method = methodMatch[1].toUpperCase();
+        hits.push({ method, routePath, file: rel, line: lineAt(content, pos) });
+        const openParenIndex = pos + methodMatch[0].length - 1;
+        const afterCall = skipBalanced(content, openParenIndex);
+        if (afterCall === -1) break; // unbalanced — stop walking this chain rather than guess
+        pos = afterCall;
+      }
     }
   }
   return hits;
@@ -102,7 +217,11 @@ export function analyzeApiEndpoints(
   projectId: string,
 ): KnowledgeNode[] {
   const sourceFiles = inventory.files.filter((f) => f.kind === "source").map((f) => f.path);
-  const hits = [...detectExpressStyleRoutes(root, sourceFiles), ...detectNextFileRoutes(root, sourceFiles)];
+  const hits = [
+    ...detectExpressStyleRoutes(root, sourceFiles),
+    ...detectChainedRoutes(root, sourceFiles),
+    ...detectNextFileRoutes(root, sourceFiles),
+  ];
   if (hits.length === 0) return [];
 
   // De-dupe identical (method, path) pairs; keep first evidence location.
@@ -202,6 +321,103 @@ function analyzeSqlFile(root: string, relPath: string, allocator: IdAllocator, p
   return nodes;
 }
 
+// ---------------------------------------------------------------------------
+// Mongoose schemas — ARCHITECTURE.md §16 finding: a real repo's two Mongoose
+// models produced zero `db-table` nodes. Two-step, per-file: find
+// `new Schema({...})` declarations (capturing top-level field names), then
+// find `mongoose.model('Name', schemaVar)` calls and bind the two together by
+// variable name. Only within the same file — a schema imported from another
+// module and passed to `model()` elsewhere is a known gap (see module doc);
+// the model still gets a node in that case, just without field detail.
+// ---------------------------------------------------------------------------
+
+/** Gate the (looser) bare `Schema(`/`model(` patterns behind evidence the file actually imports mongoose, so an unrelated `model(...)` call elsewhere doesn't false-positive. */
+const MONGOOSE_IMPORT_RE = /\bfrom\s+['"]mongoose['"]|require\(\s*['"]mongoose['"]\s*\)/;
+const MONGOOSE_SCHEMA_DECL_RE = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*new\s+(?:mongoose\s*\.\s*)?Schema\s*\(/g;
+const MONGOOSE_MODEL_CALL_RE = /\b(?:mongoose\s*\.\s*)?model\s*\(\s*(['"`])([\w$]+)\1\s*,\s*([\w$]+)/g;
+
+/** Best-effort field type from a Mongoose field's value snippet: `String`, `{ type: String, ... }`, `[...]`, or a plain identifier/dotted path. */
+function mongooseFieldType(valueSnippet: string): string {
+  const trimmed = valueSnippet.trim();
+  if (trimmed.startsWith("{")) {
+    const typeMatch = /\btype\s*:\s*([\w.[\]]+)/.exec(trimmed);
+    return typeMatch ? typeMatch[1] : "object";
+  }
+  if (trimmed.startsWith("[")) return "array";
+  const identMatch = /^[\w.]+/.exec(trimmed);
+  return identMatch ? identMatch[0] : "unknown";
+}
+
+/** Parses top-level `name: value` pairs out of a Schema object literal's inner content (between the outer `{`/`}`, exclusive). */
+function parseMongooseSchemaFields(objectInner: string): string[] {
+  const fieldKeyRe = /^\s*(?:(['"])([\w$]+)\1|([\w$]+))\s*:\s*([\s\S]*)$/;
+  const fields: string[] = [];
+  for (const rawSegment of splitTopLevel(objectInner, ",")) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+    const m = fieldKeyRe.exec(segment);
+    if (!m) continue;
+    const name = m[2] ?? m[3];
+    fields.push(`${name}: ${mongooseFieldType(m[4])}`);
+  }
+  return fields;
+}
+
+function analyzeMongooseModels(root: string, relPath: string, allocator: IdAllocator, projectId: string): KnowledgeNode[] {
+  const content = readSafe(root, relPath);
+  if (!content || !MONGOOSE_IMPORT_RE.test(content)) return [];
+
+  const schemasByVar = new Map<string, { fields: string[] }>();
+  MONGOOSE_SCHEMA_DECL_RE.lastIndex = 0;
+  let sm: RegExpExecArray | null;
+  while ((sm = MONGOOSE_SCHEMA_DECL_RE.exec(content)) !== null) {
+    const varName = sm[1];
+    const openParenIndex = MONGOOSE_SCHEMA_DECL_RE.lastIndex - 1;
+    // Schema's first argument is usually an inline object literal; a schema
+    // built from a separately-declared object (or none at all) just yields
+    // no field detail below, same as a `.route()` chain we can't balance.
+    const afterOpenParen = content.slice(openParenIndex + 1);
+    const braceOffset = /^\s*\{/.exec(afterOpenParen);
+    if (!braceOffset) {
+      schemasByVar.set(varName, { fields: [] });
+      continue;
+    }
+    const braceIndex = openParenIndex + 1 + braceOffset[0].length - 1;
+    const afterBrace = skipBalanced(content, braceIndex);
+    const fields = afterBrace === -1 ? [] : parseMongooseSchemaFields(content.slice(braceIndex + 1, afterBrace - 1));
+    schemasByVar.set(varName, { fields });
+  }
+
+  const nodes: KnowledgeNode[] = [];
+  MONGOOSE_MODEL_CALL_RE.lastIndex = 0;
+  let mm: RegExpExecArray | null;
+  while ((mm = MONGOOSE_MODEL_CALL_RE.exec(content)) !== null) {
+    const modelName = mm[2];
+    const schemaVarName = mm[3];
+    const schema = schemasByVar.get(schemaVarName);
+    const fields = schema?.fields ?? [];
+    nodes.push(
+      makeNode(allocator, projectId, "SCHEMA", {
+        type: "db-table",
+        title: modelName,
+        content:
+          `Mongoose model \`${modelName}\` (schema \`${schemaVarName}\`)` +
+          (fields.length
+            ? ` with fields:\n\n${fields.map((f) => `- ${f}`).join("\n")}`
+            : schema
+              ? "."
+              : " — schema variable not declared in this file, so field detail wasn't resolved."),
+        status: "observed",
+        confidence: null,
+        evidence: [{ path: relPath, lines: [lineAt(content, mm.index), lineAt(content, mm.index)] }],
+      }),
+    );
+  }
+  return nodes;
+}
+
+const SOURCE_LIKE_EXTENSIONS = /\.(js|jsx|ts|tsx|mjs|cjs)$/;
+
 export function analyzeDatabaseSchema(
   root: string,
   inventory: Inventory,
@@ -212,6 +428,9 @@ export function analyzeDatabaseSchema(
   for (const f of inventory.files) {
     if (f.path.endsWith(".prisma")) nodes.push(...analyzePrismaSchema(root, f.path, allocator, projectId));
     else if (f.path.endsWith(".sql")) nodes.push(...analyzeSqlFile(root, f.path, allocator, projectId));
+    else if (f.kind === "source" && SOURCE_LIKE_EXTENSIONS.test(f.path)) {
+      nodes.push(...analyzeMongooseModels(root, f.path, allocator, projectId));
+    }
   }
   return nodes;
 }

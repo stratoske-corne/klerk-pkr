@@ -12,7 +12,7 @@ Kept current as code lands, so this document doesn't drift from reality.
 |---|---|
 | Stage 1 — Ingest & inventory | ✅ built (`packages/core/src/extract/inventory.ts`) |
 | Stage 2 — Manifest & dependency analysis | ✅ built, package.json only (`extract/dependencies.ts`) |
-| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style + Next.js file routing), DB schema (Prisma + raw SQL `CREATE TABLE`), external services (dependency lookup). Event detection not built. (`extract/interfaces.ts`) |
+| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing), DB schema (Prisma + raw SQL `CREATE TABLE` + **Mongoose `Schema`/`model()` pairs**), external services (dependency lookup). The two bolded items were the M3-discovered gaps (§16) — both fixed 2026-08-16, tested against fixtures modeled on the real repo that surfaced them (§16/§18). Event detection not built. (`extract/interfaces.ts`) |
 | Stage 4 — Structure analysis | ✅ built (`extract/structure.ts`) |
 | Stage 5 — Test & environment analysis | ❌ not built |
 | Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against the real repo inventory before a node is accepted — unverifiable ones are dropped and reported, not softened. `architecture/overview.md` narrative synthesis not built (no matching node type yet). |
@@ -21,7 +21,7 @@ Kept current as code lands, so this document doesn't drift from reality.
 | `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. |
 | `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 but is additive-only in this version (doesn't retire stale inferred nodes — known gap, documented in the module). Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
-| Automated test suite | ✅ built (`packages/core`, vitest — `npm test` from the repo root runs it via the workspace). 49 tests / 10 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior, `naturalKey`/`diffInventory`, and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict), and a `loadPkr` jsonl-vs-markdown-fallback parity test. Not yet covered: stage 3/4/6 extractors directly (interfaces.ts, structure.ts, synthesize.ts), `pkr reconstruct`'s render output, the CLI layer itself. |
+| Automated test suite | ✅ built (`packages/core`, vitest — `npm test` from the repo root runs it via the workspace). 59 tests / 11 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior, `naturalKey`/`diffInventory`, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict), and a `loadPkr` jsonl-vs-markdown-fallback parity test. Not yet covered: stage 4/6 extractors directly (structure.ts, synthesize.ts), `pkr reconstruct`'s render output, the CLI layer itself. |
 | `pkr compare` | ❌ not built |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
@@ -30,7 +30,10 @@ of `expressjs/express`, a small fixture repo exercising Prisma + Stripe/Postgres
 dependency detection + Express routes, and (live, real API key, user-supplied)
 `claude-sonnet-5` synthesizing this repo's own `product/`/`behavior/` layers —
 15 proposed nodes, 0 dropped, confidence honestly varied 0.60–0.90. See §16 for
-the first full M3 loop run (real external repo → reconstruction → blind agent).
+two full M3 loop runs (export → reconstruction → blind agent): a real external
+repo (Run 1, contamination-limited) and a synthetic fixture built specifically
+to test whether a deliberately asymmetric business rule survives reconstruction
+(Run 2 — it did).
 
 ## 1. System components
 
@@ -412,15 +415,29 @@ working implementation from them alone.
   promises.
 
 **Two real deterministic-stage gaps found (repo, not our fixtures, surfaced these):**
-1. `extract/interfaces.ts`'s route regex only matches `router.get('/x', ...)`
+1. ~~`extract/interfaces.ts`'s route regex only matches `router.get('/x', ...)`
    call-per-verb style. This repo's user-management routes use chained
    `router.route('/x').get(...).post(...)` — **zero** of those were detected.
-   Real blind spot, not a hypothetical one.
-2. No Mongoose schema detection at all (`db-table` extraction only recognizes
+   Real blind spot, not a hypothetical one.~~ **Fixed 2026-08-16** —
+   `detectChainedRoutes` in `extract/interfaces.ts` walks `.route(x)` chains
+   call-by-call using a bracket-balancing helper (`skipBalanced`) so a
+   handler's own body can't derail the walk. Tested against a fixture modeled
+   directly on this repo's `user.route.js` shape (`extract/interfaces.test.ts`).
+2. ~~No Mongoose schema detection at all (`db-table` extraction only recognizes
    Prisma `schema.prisma` and raw SQL `CREATE TABLE`). Two real Mongoose models
    (`User`, `Token`) in this repo produced zero `db-table` nodes — this is also
    why the achieved reconstruction level capped at 2 instead of 3 (PKR_SPEC.md §3
-   level 3 requires a `db-table` node to exist).
+   level 3 requires a `db-table` node to exist).~~ **Fixed 2026-08-16** —
+   `analyzeMongooseModels` in `extract/interfaces.ts` binds `new Schema({...})`
+   declarations to `mongoose.model('Name', schemaVar)` calls by variable name
+   within a file (both `mongoose.Schema`-prefixed and destructured
+   `import { Schema, model }` styles), extracting top-level field names/types.
+   A schema imported from another module is a documented remaining gap — the
+   model node still gets created, just without field detail. Tested against a
+   fixture modeled on this repo's `user.model.js` (options-object 2nd arg,
+   nested validator function body, `.pre('save', ...)` hook after the model
+   call — none of which should confuse the field parser or produce spurious
+   nodes; verified they don't).
 
 **Process failure:** the reconstruction subagent stalled (killed by a 600s
 no-progress watchdog) mid-way through debugging a real `joi`/`@hapi/hoek` version
@@ -451,13 +468,87 @@ PKR_SPEC §3 level 4 explicitly includes "directory conventions" as something to
 reproduce?).
 
 **Action items for M4/M5:**
-- Fix the two deterministic gaps above (chained route syntax, Mongoose schema
-  detection) — both are concrete, testable regressions now.
-- Re-run the full M3 loop against an obscure or synthetic repo (not a well-known
-  public boilerplate) to get an uncontaminated signal on reconstruction quality.
+- ~~Fix the two deterministic gaps above (chained route syntax, Mongoose schema
+  detection) — both are concrete, testable regressions now.~~ Done 2026-08-16
+  (§18); confirmed working end-to-end, not just via fixtures — see Run 2 below.
+- ~~Re-run the full M3 loop against an obscure or synthetic repo (not a well-known
+  public boilerplate) to get an uncontaminated signal on reconstruction quality.~~
+  Done 2026-08-16 — see Run 2.
 - Consider whether `ACCEPTANCE_TESTS.md` should flag external-infrastructure
   dependencies (databases, message queues) so a reconstruction agent doesn't stall
-  chasing environment issues instead of code issues.
+  chasing environment issues instead of code issues. Still open — Run 2 sidestepped
+  this by design (repository-pattern fixture, no live DB required) rather than
+  testing it.
+
+### Run 2 — synthetic `loyalty-points-api` (2026-08-16)
+
+Setup, deliberately different from Run 1 in the one way that mattered: instead of a
+real public repo (contamination risk, per Run 1's finding), I wrote a small
+synthetic Express + Mongoose service from scratch this session — a customer
+loyalty-points API with **six business rules chosen specifically to be
+non-obvious from structure alone**, the sharpest being a deliberate *asymmetry*:
+redemption spends points FIFO across batches, but a refund reverses the one
+specific batch tied to the refunded order — never a FIFO deduction, even after
+other activity has touched the account since. A model that "cleans up" this
+asymmetry into naive symmetric FIFO would be a concrete, checkable failure. Same
+methodology otherwise: deterministic `pkr export` → hand-authored-but-genuine
+stage 6 synthesis (grounded in a real read of the repo I'd just written,
+standing in for a live API call, same as Run 1) → `pkr reconstruct` → a
+`general-purpose` subagent in an isolated worktree, given **only** the six
+`.reconstruction/` files, zero other context, told to build a working
+implementation and get `npm run build`/`npm run test` passing.
+
+**Result: the blind agent correctly implemented the asymmetric rule, independently verified, not just self-reported.**
+I read its `pointsService.js` and test suite myself and re-ran `npm run build` /
+`npm test` independently after the agent reported done (47/47 passed, confirmed).
+Its own tests specifically constructed the trap scenario — refund a *newer* order
+while an *older* order's batch sits at the FIFO front — and asserted the older
+batch is untouched. All six business rules, plus the two subtler edge cases
+(refund doesn't reverse VIP-qualifying lifetime spend; an expired-but-unpruned
+batch still matches a refund lookup by `sourceOrderId`), were implemented
+correctly. `NOTES.md` (13 documented assumptions) shows real engineering judgment
+on every genuine gap, not guessing dressed up as certainty — e.g. it correctly
+noticed the PKR names no HTTP endpoint for `earnFromPurchase` and proposed a
+documented workaround rather than inventing unevidenced certainty (this
+particular gap turned out to be real: my fixture never actually wires
+`earnFromPurchase` to a route — an artifact of the fixture, not the extractor).
+
+**One genuine semantic divergence found, and it's an honest, useful one:**
+whether the purchase that itself pushes an account's lifetime spend across the
+$500 VIP threshold is counted as VIP for its own multiplier. My original
+increments `lifetimeSpendCents` *after* checking VIP status (that purchase is
+NOT doubled); the rebuilt version increments *first, then* checks (that
+purchase IS doubled). Neither the deterministic extraction nor my stage-6
+synthesis ever captured this ordering — I didn't think to write a rule/edge-case
+node for it, so `KNOWN_AMBIGUITIES.md` had nothing to flag (our extractor only
+flags nodes explicitly `unknown`/`historical-lost`; it doesn't detect
+*unasked* questions). This is exactly the failure mode the honesty model is
+supposed to produce when it happens — a real gap in what got captured, not a
+capability failure — but it's a live example that `KNOWN_AMBIGUITIES.md`'s
+current scope (only explicitly-flagged nodes) misses gaps the synthesis step
+itself didn't think to ask about. Worth a note for M4/M5: stage 6 should be
+prompted to actively flag suspected under-specification (ordering, timing,
+concurrency) as `unknown`-status nodes, not just report what it's confident
+about.
+
+**Confirms both M3-Run-1 gap fixes work outside unit tests too:** the live
+export on this repo detected all 5 API endpoints (3 via the chained
+`.route(x).get()/.post()` syntax the fixture deliberately used) and the
+Mongoose `Account` model with correct field names/types — and reached
+reconstruction level 3, where the equivalent Run-1 repo had capped at 2 for
+exactly this reason. One process note: this only worked because `npm run
+build` was re-run for `@klerk/core`/`@klerk/cli` before testing — the CLI runs
+compiled `dist/`, and editing `src/` alone silently keeps testing the old
+behavior. Worth remembering for any future manual CLI validation.
+
+**What this run does and doesn't prove:** it's strong evidence that a PKR
+authored with real care conveys nuanced intent well enough for a blind agent to
+reproduce it — for a small, single-service backend with no cross-node edges to
+navigate. It does not test scale (this was ~10 source files), doesn't test
+`pkr update`'s incremental loop end-to-end, and the stage 6 step was still me
+standing in for a live API call, not a real one — that substitution has held up
+every time this session, but it's not the same as an independent LLM call with
+no visibility into how the fixture was designed.
 
 ## 17. Product-direction correction: continuation, not reconstruction
 
