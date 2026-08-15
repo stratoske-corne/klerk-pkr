@@ -69,6 +69,21 @@ export class FileNodeStore {
     this.edges.set(edge.id, edge);
   }
 
+  /**
+   * Removes a node — used by `pkr update` when a deterministic fact no
+   * longer re-extracts (e.g. a dependency was removed from package.json).
+   * Same protection as `upsertNode`: a confirmed node is never silently
+   * deleted (PKR_SPEC.md §4.2) — the caller is expected to have already
+   * routed confirmed nodes to a conflict instead of calling this.
+   */
+  deleteNode(id: string): void {
+    const existing = this.nodes.get(id);
+    if (existing?.status === "confirmed") {
+      throw new ConfirmedNodeOverwriteError(id);
+    }
+    this.nodes.delete(id);
+  }
+
   getNode(id: string): TNode | undefined {
     return this.nodes.get(id);
   }

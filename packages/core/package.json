@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "echo \"(no tests yet)\""
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
@@ -21,6 +21,7 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.14.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.10"
   }
 }

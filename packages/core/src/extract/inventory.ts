@@ -140,3 +140,26 @@ export function buildInventory(root: string): Inventory {
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { root, files };
 }
+
+// ---------------------------------------------------------------------------
+// Persistence — this is what `pkr update` diffs against (ARCHITECTURE.md §2).
+// `pkr export` never needs to read this back (it's a clean regeneration), but
+// always writes it so the *next* `pkr update` has a baseline.
+// ---------------------------------------------------------------------------
+
+function inventoryPath(knowledgeDir: string): string {
+  return path.join(knowledgeDir, "inventory.json");
+}
+
+export function saveInventory(knowledgeDir: string, inventory: Inventory): void {
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  // Sorted by path already (buildInventory); write deterministically for git-diff friendliness.
+  fs.writeFileSync(inventoryPath(knowledgeDir), JSON.stringify(inventory.files, null, 2) + "\n", "utf8");
+}
+
+/** Returns null if no prior inventory exists — the caller (pkr update) treats that as "nothing to diff against, do a full pass." */
+export function loadInventory(knowledgeDir: string): InventoryFile[] | null {
+  const p = inventoryPath(knowledgeDir);
+  if (!fs.existsSync(p)) return null;
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}

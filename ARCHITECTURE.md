@@ -17,20 +17,20 @@ Kept current as code lands, so this document doesn't drift from reality.
 | Stage 5 — Test & environment analysis | ❌ not built |
 | Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against the real repo inventory before a node is accepted — unverifiable ones are dropped and reported, not softened. `architecture/overview.md` narrative synthesis not built (no matching node type yet). |
 | Stage 7 — Render & write | ✅ built (`render/render.ts`), including the secret write-gate |
-| `pkr export` CLI | ✅ built (`packages/cli`), flags: `--out`, `--no-llm`, `--model` |
-| `pkr update` (incremental) | ❌ not built |
+| `pkr export` CLI (aliased `pkr init`) | ✅ built (`packages/cli`), flags: `--out`, `--no-llm`, `--model` |
+| `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. |
+| `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 but is additive-only in this version (doesn't retire stale inferred nodes — known gap, documented in the module). Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
-| `pkr compare`, `pkr context` | ❌ not built |
+| Automated test suite | ✅ built (`packages/core`, vitest — `npm test` from the repo root runs it via the workspace). 49 tests / 10 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior, `naturalKey`/`diffInventory`, and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict), and a `loadPkr` jsonl-vs-markdown-fallback parity test. Not yet covered: stage 3/4/6 extractors directly (interfaces.ts, structure.ts, synthesize.ts), `pkr reconstruct`'s render output, the CLI layer itself. |
+| `pkr compare` | ❌ not built |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
 Validated end-to-end against: this repo, `packages/core` standalone, a cloned copy
-of `expressjs/express`, and a small fixture repo exercising Prisma + Stripe/Postgres
-dependency detection + Express routes. All produced schema-valid, evidence-backed
-`observed` nodes with an honest reconstruction level. Stage 6's parsing, prompt
-security framing, and evidence-grounding filter were validated offline against a
-mocked `LlmClient` (code-fence-wrapped JSON, a hallucinated evidence path correctly
-dropped) — not yet exercised against a live model call in this environment (no
-`ANTHROPIC_API_KEY` configured here); that's the next thing to run with a real key.
+of `expressjs/express`, a small fixture repo exercising Prisma + Stripe/Postgres
+dependency detection + Express routes, and (live, real API key, user-supplied)
+`claude-sonnet-5` synthesizing this repo's own `product/`/`behavior/` layers —
+15 proposed nodes, 0 dropped, confidence honestly varied 0.60–0.90. See §16 for
+the first full M3 loop run (real external repo → reconstruction → blind agent).
 
 ## 1. System components
 
@@ -383,3 +383,146 @@ agent API, knowledge merge conflicts, branch-like versions, public PKR repos, a
 package registry, an agent marketplace, or automated benchmarking-as-a-service. The
 storage model (§7) leaves room (`parent_version_id`, project-scoped everything) but
 none of it is implemented.
+
+## 16. M3 findings log
+
+Running record of full-loop (`PRODUCT_SPEC.md` §8 Phase A–E) runs. Append, don't
+overwrite — this is the evidence base for M4/M5 schema revisions.
+
+### Run 1 — `hagopj13/node-express-boilerplate` (2026-08-15)
+
+Setup: real external repo (Express + Mongoose + JWT auth boilerplate, not
+previously read in this session), deterministic export → hand-authored-but-genuine
+stage 6 synthesis (grounded in an actual first read of the repo, standing in for a
+live API call) → `pkr reconstruct` → a `general-purpose` subagent with **zero**
+shared context, given only the six `.reconstruction/` files, told to build a real
+working implementation from them alone.
+
+**What worked:**
+- Both real gaps below were caught *because* the deterministic layer was tested
+  against unfamiliar code, not a fixture built to exercise our own regexes.
+- The reconstruction agent independently produced a directory layout (`models/`,
+  `controllers/`, `services/`, `routes/v1/`, `middlewares/`, `validations/`,
+  `utils/`, `tests/{unit,integration,fixtures}`) matching the phase groupings in
+  `BUILD_ORDER.md` — the package's structure genuinely steered it.
+- `CONSTRAINTS.md`'s exact `dependency` nodes (name + version range, `observed`,
+  from `package.json`) reproduced an **exact** dependency list in the rebuilt
+  `package.json` — this is expected and correct, not contamination: it's
+  `observed` data transcribed exactly, which is exactly what `observed` status
+  promises.
+
+**Two real deterministic-stage gaps found (repo, not our fixtures, surfaced these):**
+1. `extract/interfaces.ts`'s route regex only matches `router.get('/x', ...)`
+   call-per-verb style. This repo's user-management routes use chained
+   `router.route('/x').get(...).post(...)` — **zero** of those were detected.
+   Real blind spot, not a hypothetical one.
+2. No Mongoose schema detection at all (`db-table` extraction only recognizes
+   Prisma `schema.prisma` and raw SQL `CREATE TABLE`). Two real Mongoose models
+   (`User`, `Token`) in this repo produced zero `db-table` nodes — this is also
+   why the achieved reconstruction level capped at 2 instead of 3 (PKR_SPEC.md §3
+   level 3 requires a `db-table` node to exist).
+
+**Process failure:** the reconstruction subagent stalled (killed by a 600s
+no-progress watchdog) mid-way through debugging a real `joi`/`@hapi/hoek` version
+resolution error surfaced by running `npm test` — not a fundamental block, a
+realistic dependency-resolution rabbit hole any engineer could hit. Worth adding to
+`ACCEPTANCE_TESTS.md`: whether tests need external infrastructure (a live/mocked
+DB) so a reconstruction agent can budget for that rather than get stuck debugging
+environment noise indefinitely.
+
+**Critical methodology finding — likely training-data contamination:** comparing
+the (partial, pre-stall) rebuilt `src/models/user.model.js` against the original
+showed **near-verbatim** reproduction — identical function names
+(`isEmailTaken`, `isPasswordMatch`), identical regexes, identical bcrypt salt
+rounds (`8`), even matching JSDoc comments — none of which were ever present in
+the PKR (the synthesized nodes described the *rules*, e.g. "passwords hashed with
+bcrypt before persistence," never the literal code). No `WebSearch`/`WebFetch` tool
+calls appear in the subagent's transcript, so this isn't live lookup — the most
+likely explanation is that this specific repo is popular and old enough
+(500+ forks, referenced in many tutorials) to be memorized in the model's
+pretraining. **This means Run 1's result cannot be used as clean evidence that the
+PKR content itself was sufficient** — a famous public repo is a bad choice for this
+experiment precisely because a capable model may already know it. Corollary:
+`EvidenceRef.path` values, rendered verbatim in `CONTEXT.md`/`CONSTRAINTS.md`, also
+partially leak the *original's* file organization into the reconstruction prompt
+regardless of memorization — worth a design note for M4 (should reconstruction
+packages redact original file paths from evidence, or is that acceptable given
+PKR_SPEC §3 level 4 explicitly includes "directory conventions" as something to
+reproduce?).
+
+**Action items for M4/M5:**
+- Fix the two deterministic gaps above (chained route syntax, Mongoose schema
+  detection) — both are concrete, testable regressions now.
+- Re-run the full M3 loop against an obscure or synthetic repo (not a well-known
+  public boilerplate) to get an uncontaminated signal on reconstruction quality.
+- Consider whether `ACCEPTANCE_TESTS.md` should flag external-infrastructure
+  dependencies (databases, message queues) so a reconstruction agent doesn't stall
+  chasing environment issues instead of code issues.
+
+## 17. Product-direction correction: continuation, not reconstruction
+
+Recorded because it changes what gets built next, not just a UI label.
+
+Rebuild-from-scratch (`pkr reconstruct`, M2) was always meant as an internal
+*benchmark* for PKR completeness (`PRODUCT_SPEC.md` §8 says this explicitly: "the
+success metric is not whether the documentation looks good"). But the actual
+build/test work in M1–M3 exercised it as if it were the product surface, and a
+real user session (2026-08-15) surfaced why that's the wrong emphasis: **nobody
+wants a working project rebuilt from Markdown — the code already exists and
+runs.** The value users actually described:
+
+1. Open an unfamiliar repo, run `pkr init` (alias of `export`), then ask an AI
+   agent questions ("how does auth work", "why Redis here", "what would this API
+   change break") *instead of* reading 300 files cold.
+2. An agent makes real changes; the PKR updates to reflect them (code diff →
+   semantic diff → human-approved knowledge update — `pkr update`, not built yet).
+3. Tomorrow, a *different* agent/model opens the same repo, is hand the PKR, and
+   picks up the work with no re-explanation — this is the literal content of
+   `PRODUCT_SPEC.md` §1/§31 ("the knowledge layer survives the AI session, model,
+   and coding environment"), just stated as a concrete workflow instead of an
+   abstraction.
+
+This reprioritizes, but doesn't discard, anything already built: the extraction
+pipeline, evidence/confidence model, and node/edge schema serve continuation just
+as much as reconstruction — only the *shipped-facing* surface changes. Consequence:
+`pkr context` (§0) — a continuation-framed package, deliberately distinct from
+`.reconstruction/`'s "build this from nothing" framing — is now a primary CLI
+command, not a stub. `pkr reconstruct` stays, demoted to what it always should have
+been: a quality benchmark (§16), not the pitch.
+
+**Not yet built, now the priority for the next slice:** `pkr update` with semantic
+diff (PKR_SPEC.md's Knowledge Diff concept, PROMPT §9) — detect what changed since
+the last export, re-run stage 6 scoped to the affected node neighborhood, and
+produce a human-reviewable summary ("2 API contracts changed, 3 business rules
+added, 1 prior decision may no longer hold") instead of a wall of re-generated
+Markdown. This is the mechanism that makes the PKR trustworthy as *current*, which
+is the precondition for the cross-agent continuity story above actually working.
+
+(`pkr update` shipped shortly after this was written — see §0's row for it.)
+
+## 18. Automated test suite
+
+Added 2026-08-16, before any further feature work, on the reasoning that
+`mergeNodes.ts` — the confirmed-node-protection logic — had already shipped one
+real overwrite bug (§0, found and fixed by hand during manual testing) and had no
+safety net stopping it from regressing silently. See §0's "Automated test suite"
+row for coverage. `packages/core/vitest.config.ts`, tests live next to the modules
+they cover (`*.test.ts`).
+
+The regression tests were verified to actually regress: the confirmed-node-leak
+fix in `mergeNodes.ts` was temporarily reverted and re-run against the suite —
+exactly the 2 tests naming that bug failed, all others stayed green, then the fix
+was restored.
+
+**New finding from writing `levels.test.ts`:** `computeAchievableLevel` (`levels.ts`)
+can never return `4` as an output. Level 4's last condition and level 5's only
+condition are the same flag (`hasReconstructionArtifacts`) — so any node set that
+satisfies level 4 automatically satisfies level 5 too, and the function jumps
+straight from 3 to 5. This predates the test suite (introduced when reconstruction
+levels were first computed, M1) and is orthogonal to the confirmed-node bug above —
+recorded here rather than silently fixed because "5" is a claim rendered directly
+into every PKR's `README.md` and `manifest.yaml`, and the fix depends on deciding
+what actually distinguishes level 4 from level 5 in evidence terms (PKR_SPEC.md §3
+says level 5 needs "machine-checkable validation criteria" — arguably a distinct
+signal from merely having reconstruction artifacts, e.g. whether
+`validation.commands` is populated). Not fixed yet; a candidate for the next slice.

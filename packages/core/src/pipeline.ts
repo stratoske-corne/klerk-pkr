@@ -21,7 +21,7 @@ import { execFileSync } from "node:child_process";
 
 import { IdAllocator } from "./ids.js";
 import { FileNodeStore } from "./store/fileNodeStore.js";
-import { buildInventory } from "./extract/inventory.js";
+import { buildInventory, saveInventory } from "./extract/inventory.js";
 import { analyzeDependencies } from "./extract/dependencies.js";
 import { analyzeStructure } from "./extract/structure.js";
 import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./extract/interfaces.js";
@@ -87,6 +87,8 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
   const store = FileNodeStore.load(knowledgeDir);
 
   const inventory = buildInventory(repoRoot);
+  saveInventory(knowledgeDir, inventory); // baseline for the next `pkr update`
+
   const depResult = analyzeDependencies(repoRoot, allocator, projectId);
   const structureNodes = analyzeStructure(inventory, allocator, projectId);
   const apiNodes = analyzeApiEndpoints(repoRoot, inventory, allocator, projectId);
