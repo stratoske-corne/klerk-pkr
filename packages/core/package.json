@@ -1,0 +1,26 @@
+{
+  "name": "@klerk/core",
+  "version": "0.1.0",
+  "description": "Klerk core engine: extraction, knowledge graph, rendering — the shared library behind the pkr CLI.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"(no tests yet)\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
+    "ignore": "^5.3.1",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}
