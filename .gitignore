@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local scratch exports created while testing the CLI against sample repos.
+/tmp-export-test/
