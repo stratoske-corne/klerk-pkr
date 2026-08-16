@@ -377,3 +377,76 @@ describe("synthesizeProductAndBehavior reconciliation (existing_knowledge + supe
     expect(result.supersedesClaims).toHaveLength(0);
   });
 });
+
+describe("synthesizeProductAndBehavior — architecture-overview (ARCHITECTURE.md §29)", () => {
+  it("accepts a single, evidence-grounded architecture-overview node like any other type", async () => {
+    const root = groundingFixtureRoot();
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const llm = fakeLlmReturning([
+      {
+        type: "architecture-overview",
+        title: "System overview",
+        content: "A single Node.js HTTP server handles all requests; no separate services.",
+        confidence: 0.6,
+        domain: "ARCHITECTURE",
+        evidence: [{ path: "src/server.js" }],
+      },
+    ]);
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, llm);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0].type).toBe("architecture-overview");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("REGRESSION: keeps only the first of two architecture-overview candidates, dropping the second even though the model was told at most one", async () => {
+    const root = groundingFixtureRoot();
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const llm = fakeLlmReturning([
+      {
+        type: "architecture-overview",
+        title: "System overview (first)",
+        content: "First narrative.",
+        confidence: 0.6,
+        domain: "ARCHITECTURE",
+        evidence: [{ path: "src/server.js" }],
+      },
+      {
+        type: "architecture-overview",
+        title: "System overview (second, extra)",
+        content: "A second, redundant narrative the model shouldn't have proposed.",
+        confidence: 0.6,
+        domain: "ARCHITECTURE",
+        evidence: [{ path: "src/server.js" }],
+      },
+    ]);
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, llm);
+
+    expect(result.nodes.filter((n) => n.type === "architecture-overview")).toHaveLength(1);
+    expect(result.nodes[0].title).toBe("System overview (first)");
+    expect(result.skipped).toEqual([
+      { title: "System overview (second, extra)", reason: "only one architecture-overview node is kept per synthesis run — this one was extra" },
+    ]);
+  });
+
+  it("architecture-overview still goes through the same evidence-verification as every other type", async () => {
+    const root = groundingFixtureRoot();
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const llm = fakeLlmReturning([
+      {
+        type: "architecture-overview",
+        title: "System overview",
+        content: "Claims a path that was never shown to the model at all.",
+        confidence: 0.6,
+        domain: "ARCHITECTURE",
+        evidence: [{ path: "src/totally-invented-path.js" }],
+      },
+    ]);
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, llm);
+    expect(result.nodes).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].reason).toContain("no verifiable evidence path");
+  });
+});

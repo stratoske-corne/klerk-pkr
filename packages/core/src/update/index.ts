@@ -37,7 +37,8 @@ import { FileNodeStore } from "../store/fileNodeStore.js";
 import { buildInventory, saveInventory, loadInventory } from "../extract/inventory.js";
 import { analyzeDependencies } from "../extract/dependencies.js";
 import { analyzeStructure } from "../extract/structure.js";
-import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "../extract/interfaces.js";
+import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices, analyzeEvents } from "../extract/interfaces.js";
+import { analyzeEnvironment } from "../extract/environment.js";
 import { synthesizeProductAndBehavior, type SkippedSynthesisNode, type WeaklyGroundedNode } from "../extract/synthesize.js";
 import { renderProjectKnowledge } from "../render/render.js";
 import { diffInventory, hasChanges, type InventoryDiff } from "./diffInventory.js";
@@ -133,7 +134,17 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
   const apiNodes = analyzeApiEndpoints(repoRoot, freshInventory, scratchAllocator, projectId);
   const dbNodes = analyzeDatabaseSchema(repoRoot, freshInventory, scratchAllocator, projectId);
   const externalServiceNodes = analyzeExternalServices(depResult.dependencyNames, scratchAllocator, projectId);
-  const candidates = [...depResult.nodes, ...structureNodes, ...apiNodes, ...dbNodes, ...externalServiceNodes];
+  const eventNodes = analyzeEvents(repoRoot, freshInventory, scratchAllocator, projectId);
+  const environmentNodes = analyzeEnvironment(repoRoot, freshInventory, scratchAllocator, projectId);
+  const candidates = [
+    ...depResult.nodes,
+    ...structureNodes,
+    ...apiNodes,
+    ...dbNodes,
+    ...externalServiceNodes,
+    ...eventNodes,
+    ...environmentNodes,
+  ];
 
   const nodeMerge = mergeDeterministicNodes(store, allocator, projectId, candidates);
 

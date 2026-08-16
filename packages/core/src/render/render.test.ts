@@ -128,3 +128,32 @@ describe("renderProjectKnowledge — superseded nodes", () => {
     });
   });
 });
+
+describe("renderProjectKnowledge — architecture-overview (ARCHITECTURE.md §29)", () => {
+  it("renders into architecture/overview.md, the file this type existed to fill", () => {
+    const allocator = IdAllocator.load(tmpDir());
+    const outDir = path.join(tmpDir(), ".projectknowledge");
+    const overview = makeNode(allocator, "proj", "ARCHITECTURE", {
+      type: "architecture-overview",
+      title: "System overview",
+      content: "A narrative describing how the pieces fit together.",
+      status: "inferred",
+      confidence: 0.7,
+      evidence: [{ path: "src/index.js" }],
+    });
+
+    renderProjectKnowledge({
+      outDir,
+      projectName: "demo",
+      nodes: [overview],
+      edges: [],
+      sourceCommit: null,
+      generatorVersion: "test",
+      knowledgeVersion: "v0.1",
+    });
+
+    const overviewFile = fs.readFileSync(path.join(outDir, "architecture", "overview.md"), "utf8");
+    expect(overviewFile).toContain("System overview");
+    expect(overviewFile).toContain("A narrative describing how the pieces fit together.");
+  });
+});

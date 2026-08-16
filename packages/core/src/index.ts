@@ -10,6 +10,7 @@ export * from "./store/fileNodeStore.js";
 export * from "./extract/inventory.js";
 export * from "./extract/dependencies.js";
 export * from "./extract/structure.js";
+export * from "./extract/environment.js";
 export * from "./extract/interfaces.js";
 export * from "./extract/synthesize.js";
 export * from "./llm/client.js";

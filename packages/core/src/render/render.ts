@@ -39,10 +39,12 @@ export const NODE_TYPE_TARGET: Partial<Record<NodeType, FileTarget>> = {
   component: { dir: "architecture", file: "components.md", heading: "Components" },
   boundary: { dir: "architecture", file: "boundaries.md", heading: "Boundaries" },
   "deployment-unit": { dir: "architecture", file: "deployment.md", heading: "Deployment" },
+  "architecture-overview": { dir: "architecture", file: "overview.md", heading: "Overview" },
 
   "tech-choice": { dir: "implementation", file: "technology-stack.md", heading: "Technology Stack" },
   convention: { dir: "implementation", file: "coding-conventions.md", heading: "Coding Conventions" },
   dependency: { dir: "implementation", file: "dependencies.md", heading: "Dependencies" },
+  "environment-setup": { dir: "implementation", file: "environment.md", heading: "Environment & Setup" },
 
   "api-endpoint": { dir: "interfaces", file: "api-contracts.md", heading: "API Contracts" },
   "db-table": { dir: "interfaces", file: "database-schema.md", heading: "Database Schema" },

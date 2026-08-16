@@ -10,9 +10,10 @@
  * Covers, in this slice: HTTP routes (Express/Fastify/Koa-style handler
  * calls, `router.route(x).get(...).post(...)` chains, + Next.js file-based
  * routing), database tables (Prisma schema, raw SQL CREATE TABLE, and
- * Mongoose `Schema`/`model()` pairs), and external services (via
- * known-package lookup against already-extracted dependencies). Event-bus
- * detection is a known gap, not built yet — see ARCHITECTURE.md §11.
+ * Mongoose `Schema`/`model()` pairs), external services (via known-package
+ * lookup against already-extracted dependencies), and events (Kafka
+ * produce/consume, RabbitMQ send/consume — ARCHITECTURE.md §27, narrower
+ * than a general event-bus detector on purpose, see that function's doc).
  *
  * The chained-route and Mongoose detectors below were added in response to
  * two real gaps found during the M3 blind-reconstruction experiment
@@ -583,6 +584,114 @@ export function analyzeExternalServices(
         status: "observed",
         confidence: null,
         evidence: [{ path: "package.json" }],
+      }),
+    );
+  }
+  return nodes;
+}
+
+// ---------------------------------------------------------------------------
+// Events (ARCHITECTURE.md §27) — a real, previously-tracked gap (the module
+// doc above used to say "not built yet"). Scoped narrowly on purpose: Kafka
+// (kafkajs) produce/consume and RabbitMQ (amqplib) send/consume — both have
+// a distinctive enough call shape to detect with real confidence, unlike
+// generic `.publish()`/`.on()`/EventEmitter usage, which collides with too
+// many unrelated APIs (Node's own EventEmitter, RxJS, MQTT, Redis pub/sub,
+// even a plain custom class) to detect without guessing. `.send(` and
+// `.subscribe(` alone are exactly this kind of ambiguous — `res.send(...)`
+// and an RxJS `.subscribe(...)` are far more common in a typical repo than
+// a Kafka call — so both require a literal `topic:` key inside the call's
+// arguments before being trusted as Kafka at all; no `topic:` key means no
+// node, not a lower-confidence guess (this stage is `status: observed`
+// only — PKR_SPEC.md §4.1 doesn't let it hedge).
+// ---------------------------------------------------------------------------
+
+interface EventHit {
+  kind: "Kafka" | "RabbitMQ";
+  direction: "produce" | "consume";
+  channel: string;
+  file: string;
+  line: number;
+}
+
+const SEND_CALL_RE = /\.\s*send\s*\(/g;
+const SUBSCRIBE_CALL_RE = /\.\s*subscribe\s*\(/g;
+const TOPIC_KEY_RE = /\btopic\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/;
+const SEND_TO_QUEUE_RE = /\.\s*sendToQueue\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g;
+const CONSUME_CALL_RE = /\.\s*consume\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1/g;
+
+function detectKafkaEvents(root: string, files: string[]): EventHit[] {
+  const hits: EventHit[] = [];
+  for (const rel of files) {
+    const content = readSafe(root, rel);
+    if (!content) continue;
+
+    for (const [re, direction] of [
+      [SEND_CALL_RE, "produce"],
+      [SUBSCRIBE_CALL_RE, "consume"],
+    ] as const) {
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(content)) !== null) {
+        const openParen = content.indexOf("(", m.index);
+        if (openParen === -1) continue;
+        const closeIdx = skipBalanced(content, openParen);
+        if (closeIdx === -1) continue;
+        const args = content.slice(openParen + 1, closeIdx - 1);
+        const topicMatch = TOPIC_KEY_RE.exec(args);
+        if (!topicMatch) continue; // no `topic:` key -> can't confidently call this Kafka
+        hits.push({ kind: "Kafka", direction, channel: topicMatch[2], file: rel, line: lineAt(content, m.index) });
+      }
+    }
+  }
+  return hits;
+}
+
+function detectRabbitMqEvents(root: string, files: string[]): EventHit[] {
+  const hits: EventHit[] = [];
+  for (const rel of files) {
+    const content = readSafe(root, rel);
+    if (!content) continue;
+
+    SEND_TO_QUEUE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = SEND_TO_QUEUE_RE.exec(content)) !== null) {
+      hits.push({ kind: "RabbitMQ", direction: "produce", channel: m[2], file: rel, line: lineAt(content, m.index) });
+    }
+
+    CONSUME_CALL_RE.lastIndex = 0;
+    while ((m = CONSUME_CALL_RE.exec(content)) !== null) {
+      hits.push({ kind: "RabbitMQ", direction: "consume", channel: m[2], file: rel, line: lineAt(content, m.index) });
+    }
+  }
+  return hits;
+}
+
+export function analyzeEvents(root: string, inventory: Inventory, allocator: IdAllocator, projectId: string): KnowledgeNode[] {
+  const sourceFiles = inventory.files.filter((f) => f.kind === "source").map((f) => f.path);
+  const hits = [...detectKafkaEvents(root, sourceFiles), ...detectRabbitMqEvents(root, sourceFiles)];
+  if (hits.length === 0) return [];
+
+  // De-dupe identical (kind, direction, channel) triples; keep first evidence location.
+  const byKey = new Map<string, EventHit>();
+  for (const hit of hits) {
+    const key = `${hit.kind}|${hit.direction}|${hit.channel}`;
+    if (!byKey.has(key)) byKey.set(key, hit);
+  }
+
+  const nodes: KnowledgeNode[] = [];
+  for (const [, hit] of [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const arrow = hit.direction === "produce" ? "→" : "←";
+    const channelWord = hit.kind === "Kafka" ? "topic" : "queue";
+    const verb = hit.direction === "produce" ? (hit.kind === "Kafka" ? "produces to" : "sends to") : "consumes from";
+    nodes.push(
+      makeNode(allocator, projectId, "EVENTS", {
+        type: "event",
+        title: `${hit.kind} ${hit.direction} ${arrow} ${hit.channel}`,
+        content: `The project ${verb} the ${hit.kind} ${channelWord} \`${hit.channel}\`.`,
+        status: "observed",
+        confidence: null,
+        evidence: [{ path: hit.file, lines: [hit.line, hit.line] }],
       }),
     );
   }

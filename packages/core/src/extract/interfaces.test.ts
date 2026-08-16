@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { IdAllocator } from "../ids.js";
-import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./interfaces.js";
+import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices, analyzeEvents } from "./interfaces.js";
 import type { Inventory } from "./inventory.js";
 
 function tmpRepo(): string {
@@ -349,5 +349,70 @@ describe("analyzeExternalServices", () => {
   it("ignores unknown package names without erroring", () => {
     const nodes = analyzeExternalServices(["some-random-internal-utility"], IdAllocator.load(tmpRepo()), "proj");
     expect(nodes).toHaveLength(0);
+  });
+});
+
+describe("analyzeEvents (ARCHITECTURE.md §27)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = tmpRepo();
+  });
+
+  it("detects a Kafka producer via producer.send({ topic: ... })", () => {
+    writeFile(root, "src/producer.js", "await producer.send({ topic: 'order-events', messages: [{ value: 'x' }] });\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/producer.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].title).toBe("Kafka produce → order-events");
+    expect(nodes[0].content).toContain("Kafka topic `order-events`");
+  });
+
+  it("detects a Kafka consumer via consumer.subscribe({ topic: ... })", () => {
+    writeFile(root, "src/consumer.js", "await consumer.subscribe({ topic: 'order-events', fromBeginning: true });\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/consumer.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].title).toBe("Kafka consume ← order-events");
+  });
+
+  it("does NOT flag a plain res.send() as a Kafka event (no topic key present)", () => {
+    writeFile(root, "src/routes.js", "app.get('/status', (req, res) => res.send('ok'));\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/routes.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(0);
+  });
+
+  it("does NOT flag an RxJS-style .subscribe() as a Kafka event (no topic key present)", () => {
+    writeFile(root, "src/observable.js", "someObservable.subscribe((value) => console.log(value));\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/observable.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(0);
+  });
+
+  it("detects RabbitMQ sendToQueue and consume", () => {
+    writeFile(
+      root,
+      "src/amqp.js",
+      "channel.sendToQueue('order-processing', Buffer.from(JSON.stringify(order)));\nchannel.consume('order-processing', onMessage);\n",
+    );
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/amqp.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes.map((n) => n.title).sort()).toEqual(["RabbitMQ consume ← order-processing", "RabbitMQ produce → order-processing"]);
+  });
+
+  it("de-dupes identical (kind, direction, channel) hits across files, keeping one node", () => {
+    writeFile(root, "src/a.js", "producer.send({ topic: 'order-events', messages: [] });\n");
+    writeFile(root, "src/b.js", "producer.send({ topic: 'order-events', messages: [] });\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/a.js", "src/b.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(1);
+  });
+
+  it("every emitted node is status: observed with real line-number evidence", () => {
+    writeFile(root, "src/producer.js", "\n\nawait producer.send({ topic: 'order-events', messages: [] });\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/producer.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes[0].status).toBe("observed");
+    expect(nodes[0].evidence).toEqual([{ path: "src/producer.js", lines: [3, 3] }]);
+  });
+
+  it("returns nothing when there's no event-shaped code at all", () => {
+    writeFile(root, "src/index.js", "console.log('hi');\n");
+    const nodes = analyzeEvents(root, inventoryOf(root, ["src/index.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toEqual([]);
   });
 });

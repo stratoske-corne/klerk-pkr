@@ -12,10 +12,10 @@ Kept current as code lands, so this document doesn't drift from reality.
 |---|---|
 | Stage 1 — Ingest & inventory | ✅ built (`packages/core/src/extract/inventory.ts`) |
 | Stage 2 — Manifest & dependency analysis | ✅ built, package.json only (`extract/dependencies.ts`) |
-| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing, **now with single-level router mount-prefix resolution** — §20), DB schema (Prisma + raw SQL `CREATE TABLE` + Mongoose `Schema`/`model()` pairs), external services (dependency lookup, now including `kafkajs`/`socket.io`/`@google/generative-ai` — §20). The chained-route/Mongoose/mount-prefix/external-services items were all real-repo-discovered gaps (§16 M3, §20 M6) — fixed same-session each time, tested against fixtures modeled on the real repos that surfaced them. Event detection not built. (`extract/interfaces.ts`) |
+| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing, **now with single-level router mount-prefix resolution** — §20), DB schema (Prisma + raw SQL `CREATE TABLE` + Mongoose `Schema`/`model()` pairs), external services (dependency lookup, now including `kafkajs`/`socket.io`/`@google/generative-ai` — §20). The chained-route/Mongoose/mount-prefix/external-services items were all real-repo-discovered gaps (§16 M3, §20 M6) — fixed same-session each time, tested against fixtures modeled on the real repos that surfaced them. Event detection (§27, 2026-08-16): Kafka produce/consume and RabbitMQ send/consume, deliberately narrower than a general event-bus detector — see §27. (`extract/interfaces.ts`) |
 | Stage 4 — Structure analysis | ✅ built (`extract/structure.ts`) |
-| Stage 5 — Test & environment analysis | ❌ not built |
-| Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against what was actually shown to the model (excerpt content or an observed node's evidence pointer), not the whole repo inventory — unverifiable ones are dropped and reported, weakly-grounded ones (real path, content never shown) are kept but flagged separately, not softened silently. `architecture/overview.md` narrative synthesis not built (no matching node type yet). **2026-08-16, first real (non-standing-in) API validation** (§16 Run 3) found and fixed three gaps in one session, each confirmed by a real API call before being traced and fixed: (1) `buildExcerpts()` silently excluded `docs/` subdirectories, (2) the file with the actual business logic was never an excerpt candidate under any selection rule (new size-based fallback added), (3) evidence verification accepted any real repo file, not just paths actually shown to the model (now tiered: excerpt-backed vs. fact-summary-only, the latter flagged as `weaklyGrounded`). Clean before/after on the same repo+model for (1)+(2): proposed nodes went from surface-level-only to correctly capturing every real business rule. |
+| Stage 5 — Test & environment analysis | ✅ built (§28, 2026-08-16) — `extract/environment.ts`, new `environment-setup` node type, feeds the previously-unpopulated `implementation/environment.md`. Test file inventory (count only), environment variable *names* only — never values, and a real `.env` is never opened at all (`.env.example`/`.env.sample`/`.env.template` only) — and CI/deploy config presence (GitHub Actions, GitLab CI, CircleCI, Jenkins, Docker, Docker Compose). Test *runner* identification isn't duplicated here — already a `tech-choice` node from stage 2's framework lookup (which also gained mocha/ava/tap/jasmine/cypress the same day). |
+| Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior`/`architecture-overview` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against what was actually shown to the model (excerpt content or an observed node's evidence pointer), not the whole repo inventory — unverifiable ones are dropped and reported, weakly-grounded ones (real path, content never shown) are kept but flagged separately, not softened silently. `architecture/overview.md` narrative synthesis (§29, 2026-08-16): a new `architecture-overview` node type, capped at one per run (prompt instruction + independent code-level enforcement, same distrust-the-model discipline as evidence/supersedes verification), real-API-validated same day — see §29. **2026-08-16, first real (non-standing-in) API validation** (§16 Run 3) found and fixed three gaps in one session, each confirmed by a real API call before being traced and fixed: (1) `buildExcerpts()` silently excluded `docs/` subdirectories, (2) the file with the actual business logic was never an excerpt candidate under any selection rule (new size-based fallback added), (3) evidence verification accepted any real repo file, not just paths actually shown to the model (now tiered: excerpt-backed vs. fact-summary-only, the latter flagged as `weaklyGrounded`). Clean before/after on the same repo+model for (1)+(2): proposed nodes went from surface-level-only to correctly capturing every real business rule. |
 | Stage 7 — Render & write | ✅ built (`render/render.ts`), including the secret write-gate (a real gap in it found and fixed 2026-08-16 — §23) |
 | `pkr export` CLI (aliased `pkr init`) | ✅ built (`packages/cli`), flags: `--out`, `--no-llm`, `--model` |
 | `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. **2026-08-16 addition** (the "agent-instruction, not a daemon" automation route, chosen over a file-watcher or git hook — see chat log rationale): the rendered file now (a) tells the agent explicitly to run `pkr update <repo>` when it finishes making changes, and (b) runs a best-effort staleness check (`--repo`, defaults to the PKR dir's parent) reusing `pkr update`'s own `diffInventory` machinery, surfacing a changed-file count or an honest "unknown" rather than silently assuming freshness. Found and fixed a real bug while verifying this live (not just via fixtures): `.context/`/`.reconstruction/` weren't in `extract/inventory.ts`'s `ALWAYS_IGNORE`, so writing a context file counted as drift against *itself* on the very next run — regression-tested in `context/index.test.ts`. |
@@ -24,7 +24,7 @@ Kept current as code lands, so this document doesn't drift from reality.
 | `pkr diff <from> [to]` | ✅ built (§24, 2026-08-16) — a `git log from..to`-style range over committed versions (aggregates every `changed_nodes` entry from every version strictly after `from` up to and including `to`), not a computed before/after content diff. `to` defaults to the latest version. Only supports a straight ancestor chain (no branching in this data model) — a reversed or unrelated range fails cleanly with a hint rather than silently walking the wrong chain. |
 | `pkr confirm` / `pkr edit` | ✅ built (§26, 2026-08-16) — `packages/core/src/correct.ts`. The first user-facing way to actually *create* a confirmed node — the confirmed-node-protection mechanism (PKR_SPEC.md §4.2) had been validated exhaustively (§16 Run 4, §19, the mergeNodes confirmed-node-leak regression) with zero CLI surface to produce one; every prior confirmed node in this project's history was built by a test writing to the store directly. `pkr confirm <id>` confirms as-is; `pkr edit <id> --title/--content` corrects and confirms in one step (PRODUCT_SPEC.md §5.5 treats these as one feature). Commits a Knowledge Version with `author: "human"` (the first non-extractor-authored version) and a new `"confirmed"` `ChangeKind`. Verified live, not just by test: confirming a node, then changing the underlying code and running `pkr update`, correctly produced a `conflicts_with` edge (`! ... is confirmed but extraction now disagrees`) instead of a silent rewrite — the first time this exact mechanism has been exercised through real CLI usage rather than a test forcing a node into `confirmed` state programmatically. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
-| Automated test suite | ✅ built. `packages/core` (vitest): 105 tests / 16 files (includes 5 covering §20's router mount-prefix resolution, 3 covering its external-services lookup-table fix, and 3 covering §21's changed-file excerpt priority, each reproducing the exact real-repo gap that motivated it), all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 13 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Plus 2 tests added 2026-08-16 (§22) reproducing the `title → title` modified-line bug (an Express route's line shifting without its signature changing, and a `dependency` node's genuine version-bump retitle) — reverting the fix reproduces the exact symptom and fails only the first of those two. Plus 3 tests added 2026-08-16 (§23) reproducing the secret write-gate's `\b`-boundary gap. Plus 11 tests added 2026-08-16 (§24 Knowledge Versioning): 8 unit tests on `versions.ts` (`packages/core`), 3 end-to-end integration tests (`update/index.integration.test.ts` — export commits v0.1, a no-op commits nothing, a real change commits v0.2 chained to v0.1 with the manifest reflecting it), and 4 CLI-level tests (`packages/cli` — export reports v0.1, `pkr log` shows it newest-first, a real update bumps to v0.2, a no-op update stays at v0.1, plus the clean-error case for `pkr log` with no PKR); the empty-changed-nodes guard was verified by hand (reverting it turns the one dedicated "writes nothing" unit test red, nothing else). Plus 11 more tests added the same day for `pkr diff` (§24): 6 unit (`versions.ts` — range aggregation, `to`-defaulting, identical-versions no-op, reversed-range/unknown-version errors, empty-store error) and 5 CLI (`packages/cli`, including both error cases end-to-end); the ancestor-chain guard was verified by hand (disabling it turns exactly the reversed-range test red, nothing else). Plus 14 tests added the same day for `pkr compare` (§25): 10 unit (`compare/index.ts` — perfect/partial API match, not-measurable with no endpoints, architecture always heuristic, build skipped-by-default message, build not-measurable with no build script even under `--run-build`, build actually executed both succeeding and failing with output detail, equal-weighted overall score over only scored rows, clean error for a nonexistent reconstruction path) and 4 CLI; the not-measurable guard was verified by hand. Plus 13 tests added the same day for `pkr confirm`/`pkr edit` (§26): 7 unit (`correct.ts` — confirms unchanged, edits title/content and confirms, persists across a fresh store load, re-confirm reports `wasAlreadyConfirmed`, commits a `human`-authored version with a `"confirmed"` ChangeKind, clean errors for an unknown node ID and a missing PKR) and 6 CLI (`packages/cli`, including the no-internal-store and edit-with-no-flags clean-error cases); the `confirmed_by: "human"` assignment was verified by hand — reverting it to `null` reproduces a real `ConfirmedNodeOverwriteError` on re-confirm, the same protection mechanism `mergeNodes` was already tested against, now proven to interact correctly with this new write path too. `packages/core` total now 142 tests / 19 files; **173 across both packages** (`packages/cli`: 31 tests). Not yet covered: stage 4 directly (structure.ts). |
+| Automated test suite | ✅ built. `packages/core` (vitest): 105 tests / 16 files (includes 5 covering §20's router mount-prefix resolution, 3 covering its external-services lookup-table fix, and 3 covering §21's changed-file excerpt priority, each reproducing the exact real-repo gap that motivated it), all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 13 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Plus 2 tests added 2026-08-16 (§22) reproducing the `title → title` modified-line bug (an Express route's line shifting without its signature changing, and a `dependency` node's genuine version-bump retitle) — reverting the fix reproduces the exact symptom and fails only the first of those two. Plus 3 tests added 2026-08-16 (§23) reproducing the secret write-gate's `\b`-boundary gap. Plus 11 tests added 2026-08-16 (§24 Knowledge Versioning): 8 unit tests on `versions.ts` (`packages/core`), 3 end-to-end integration tests (`update/index.integration.test.ts` — export commits v0.1, a no-op commits nothing, a real change commits v0.2 chained to v0.1 with the manifest reflecting it), and 4 CLI-level tests (`packages/cli` — export reports v0.1, `pkr log` shows it newest-first, a real update bumps to v0.2, a no-op update stays at v0.1, plus the clean-error case for `pkr log` with no PKR); the empty-changed-nodes guard was verified by hand (reverting it turns the one dedicated "writes nothing" unit test red, nothing else). Plus 11 more tests added the same day for `pkr diff` (§24): 6 unit (`versions.ts` — range aggregation, `to`-defaulting, identical-versions no-op, reversed-range/unknown-version errors, empty-store error) and 5 CLI (`packages/cli`, including both error cases end-to-end); the ancestor-chain guard was verified by hand (disabling it turns exactly the reversed-range test red, nothing else). Plus 14 tests added the same day for `pkr compare` (§25): 10 unit (`compare/index.ts` — perfect/partial API match, not-measurable with no endpoints, architecture always heuristic, build skipped-by-default message, build not-measurable with no build script even under `--run-build`, build actually executed both succeeding and failing with output detail, equal-weighted overall score over only scored rows, clean error for a nonexistent reconstruction path) and 4 CLI; the not-measurable guard was verified by hand. Plus 13 tests added the same day for `pkr confirm`/`pkr edit` (§26): 7 unit (`correct.ts` — confirms unchanged, edits title/content and confirms, persists across a fresh store load, re-confirm reports `wasAlreadyConfirmed`, commits a `human`-authored version with a `"confirmed"` ChangeKind, clean errors for an unknown node ID and a missing PKR) and 6 CLI (`packages/cli`, including the no-internal-store and edit-with-no-flags clean-error cases); the `confirmed_by: "human"` assignment was verified by hand — reverting it to `null` reproduces a real `ConfirmedNodeOverwriteError` on re-confirm, the same protection mechanism `mergeNodes` was already tested against, now proven to interact correctly with this new write path too. Plus 12 tests added 2026-08-16 covering two previously-tracked gaps closed the same day: stage 4/`structure.ts` (§0's own "not yet covered" note, below) — 12 unit tests on `analyzeStructure` (component-per-directory, root-level files correctly produce no component, co-located vs. dedicated test-directory convention detection, alphabetical sort, always `observed`/null-confidence) — and event detection (§27) — 8 unit tests on `analyzeEvents` (Kafka produce/consume via a required `topic:` key, explicitly confirming a bare `res.send()`/RxJS `.subscribe()` do NOT false-positive, RabbitMQ send/consume, cross-file de-dupe, real line-number evidence); the `topic:`-key guard was verified by hand — removing it doesn't just weaken precision, it crashes (a null-dereference on the now-unconditional match), an even stronger signal the guard is load-bearing. Plus 14 tests added the same day for stage 5 (§28): `extract/environment.test.ts` (new, 14 tests) — test-file-count reporting, `process.env.NAME`/`process.env['NAME']` detection, `.env.example` var-name scanning, CI/deploy marker detection per platform, always `observed`/non-empty-evidence. Two tests specifically prove the security property is real, not just regex-shaped: one that a name existing *only* in a real `.env` never appears anywhere in output (proves the file is never opened at all, not just that its value would be discarded), one that a value from `.env.example` never appears even though its key does. The filename-restriction guard was verified by hand in an unusually convincing way: the first version of that "never opens .env" test actually passed even with the guard deliberately broken, because the value-discarding regex made the test's original assertion (checking a secret *value* never leaked) true regardless of which files got scanned — rewritten to check that a name unique to `.env` never appears at all, which then correctly failed against the broken guard (and the failure output showed the leaked node in full, `.env` visibly having been read) and passed once restored. Plus 4 tests added the same day for `architecture-overview` synthesis (§29): accepts a single evidence-grounded node like any other type, a REGRESSION test proving the code-level at-most-one enforcement actually fires (not just the prompt instruction — two candidates in one fake-LLM response, only the first kept, the second lands in `skipped` with a specific reason), and confirming the same evidence-verification/rejection path applies to this type as every other, plus 1 render-level test confirming it lands in `architecture/overview.md`, the file that existed in the schema but sat empty since early in the project. `packages/core` total now 180 tests / 22 files; **211 across both packages** (`packages/cli`: 31 tests). Stage 4 is now covered directly — the "not yet covered" gap this row used to end on is closed. |
 | `pkr compare` | ✅ built (§25, 2026-08-16), MVP scope — `packages/core/src/compare/`. Compares an original PKR against a candidate reconstruction repo: API/schema compatibility (measured, name-set diffs), architecture similarity (heuristic, Jaccard over component names), build/test success (measured, opt-in via `--run-build` — the only subprocess call in this codebase that runs code from something other than this tool itself). Every row explicitly labeled measured/heuristic/not-measurable, overall score is a printed equal-weighted average, never a black box. Deferred: shape/column-level schema diff, black-box contract-test execution of the original's suite against the reconstruction, compound "behavioral similarity". |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
@@ -1653,3 +1653,209 @@ was verified by hand: reverting it to `null` reproduces a real
 protection error `mergeNodes` was already tested against, now proven to
 interact correctly with this new write path too, not just the automated
 ones. `packages/core`: 142 tests / 19 files. Both packages: **173 tests**.
+
+## 27. Closing two tracked gaps: stage 4 test coverage, event detection (2026-08-16)
+
+With the CLI-level MVP feature set essentially complete after §26 (every
+`PRODUCT_SPEC.md` §5 feature except the hosted web app/auth, which are out
+of scope by design — §7), turned to the smaller items §0 had been
+carrying as known, tracked gaps rather than open-ended new features.
+
+### Stage 4 (`structure.ts`) unit tests
+
+Had zero direct coverage despite being exercised indirectly through every
+integration test — the one specific gap the "Automated test suite" row
+kept naming. `analyzeStructure` is pure metadata analysis over an
+already-built `Inventory` (no file content read, no disk I/O of its own),
+so the 12 new tests construct `Inventory` objects directly rather than
+writing real files to disk — there's nothing content-based here that real
+files would exercise differently. Covers: one component node per top-level
+source-containing directory, root-level files correctly producing zero
+components, the monorepo/workspace convention detector, both directions of
+the co-located-vs-dedicated test convention (majority-rules), alphabetical
+sort, and the blanket rule that every stage-4 node is `observed` with null
+confidence (no judgment calls at this stage).
+
+### Event detection (`analyzeEvents`, `extract/interfaces.ts`)
+
+The one extraction category `interfaces.ts`'s own module doc had named as
+"a known gap, not built yet" since early in this project. Scoped
+deliberately narrower than "detect any event system": Kafka (kafkajs)
+produce/consume and RabbitMQ (amqplib) send/consume only. A general
+event-bus detector would mean matching `.publish()`/`.subscribe()`/`.on()`
+against Node's own `EventEmitter`, RxJS, MQTT, Redis pub/sub, and any
+custom pub/sub wrapper — too many unrelated, common APIs share those method
+names to detect without guessing (this stage is `status: observed` only;
+PKR_SPEC.md §4.1 doesn't allow it to hedge with a lower confidence
+instead). The two patterns built both have a genuinely distinctive
+"fingerprint": a literal `topic:` key inside a `.send(`/`.subscribe(`
+call's arguments (kafkajs's actual API shape), or the much less ambiguous
+method names `sendToQueue`/`consume` (amqplib). Explicitly verified the
+negative case matters, not just the positive one: a plain Express
+`res.send(...)` and an RxJS `.subscribe(...)` — both far more common in a
+typical repo than an actual Kafka call — do not produce a false-positive
+event node, because neither has a `topic:` key in its arguments.
+
+Verified live via the compiled CLI against a real fixture combining both
+protocols in one file: correctly produced 4 distinct event nodes (`Kafka
+produce → order-events`, `Kafka consume ← order-events`, `RabbitMQ produce
+→ notifications`, `RabbitMQ consume ← notifications`), each with correct
+per-line evidence, rendered into the pre-existing (previously always empty)
+`interfaces/events.md` — the `event` node type, its `EVT` ID prefix, and
+its render target already existed in the schema/render layer from early in
+the project; this is the first extractor that ever actually populates it.
+Wired into both `pkr export` (`pipeline.ts`) and `pkr update`
+(`update/index.ts`) the same way every other stage-3 extractor is; `event`
+was already in `naturalKey.ts`'s `NATURAL_KEY_TYPES`, so incremental update
+matching for event nodes works without any additional change.
+
+### Testing
+
+8 unit tests (`extract/interfaces.test.ts`) for events, 12 for
+`structure.ts` (`extract/structure.test.ts`, new file). The `topic:`-key
+guard was verified by hand in an unusually strong way: removing it doesn't
+just weaken precision on the false-positive tests, it crashes outright (a
+null-dereference on what's now an unconditional regex-match access) —
+about as unambiguous a signal as a revert-and-check can produce that a
+guard is load-bearing rather than defensive-but-unnecessary.
+`packages/core`: 162 tests / 20 files. Both packages: **193 tests**.
+
+## 28. Stage 5 — Test & environment analysis (2026-08-16)
+
+The last unbuilt deterministic stage. ARCHITECTURE.md §2's original spec
+bundles four things into stage 5, all feeding one file
+(`implementation/environment.md`) — reserved in `PKR_SPEC.md` §1's
+directory vocabulary since early in the project, never populated until
+now.
+
+### What ships
+
+- **New node type `environment-setup`** (`types.ts`, prefix `TECH` — same
+  family as the other `implementation/`-layer types), wired into
+  `render.ts`'s type→file mapping and `naturalKey.ts`'s
+  `NATURAL_KEY_TYPES` so `pkr update`/`pkr diff` treat it like every other
+  deterministic fact.
+- **`extract/environment.ts`** (new file, mirroring one-file-per-stage —
+  `inventory.ts`=1, `dependencies.ts`=2, `interfaces.ts`=3, `structure.ts`=4):
+  - *Test file inventory*: a count from stage 1's classification, capped
+    evidence (first 5 paths) — no test file content read here or anywhere
+    in this module.
+  - *Referenced environment variable names, never values* (`PKR_SPEC.md`
+    §10): `process.env.NAME` / `process.env['NAME']` in source (a property
+    *read* — the value never appears in source text, nothing to
+    over-capture even in principle), plus `.env.example`/`.env.sample`/
+    `.env.template`-named files specifically. A real `.env`/`.env.local`/
+    `.env.production` is never opened, full stop — a deliberate second
+    layer of defense on top of the value-discarding regex, not redundant
+    with it (see Testing below for why that distinction turned out to
+    matter in practice).
+  - *CI/deployment config presence*: GitHub Actions, GitLab CI, CircleCI,
+    Jenkins, Docker, Docker Compose — which platform is configured, not its
+    contents.
+- **Test *runner* identification deliberately not duplicated**: Jest/
+  Vitest/etc. was already a `tech-choice` node via stage 2's
+  `KNOWN_FRAMEWORKS` lookup, which gained `mocha`/`ava`/`tap`/`jasmine`/
+  `cypress` the same day as a small, free complement.
+- **`schema_version` stays `"0.1"`**, a deliberate decision not an
+  oversight: `Manifest`'s `schema_version` is a hard `z.literal("0.1")`
+  equality check, not a semver range. `PKR_SPEC.md` §0's own stated policy
+  ("additive changes bump the minor version") would suggest `"0.2"` here,
+  but bumping the literal would reject every already-exported PKR the
+  moment `loadManifest`/`loadPkr` tries to parse it — every command except
+  `pkr export` itself. Caught before making the change, not after; noted
+  here and in the module doc as a real, tracked inconsistency between
+  policy and practice rather than silently deviating from the stated rule.
+- Wired into `pkr export` (`pipeline.ts`) and `pkr update`
+  (`update/index.ts`) the same way every other stage-2/3/4 extractor is.
+
+### Verified live against a real fixture, not just tests
+
+A repo with `process.env.DATABASE_URL`/`PORT` in source, a `.env.example`
+declaring `DATABASE_URL`/`API_KEY`, a **real** `.env` with an actual
+secret-shaped value, a GitHub Actions workflow, and a `Dockerfile`: `pkr
+export` correctly produced 4 nodes (test inventory, 3 merged env-var names,
+GitHub Actions, Docker) in `implementation/environment.md` — and a `grep`
+across the entire written `.projectknowledge/` output for the real `.env`'s
+literal secret value came back clean.
+
+### Testing
+
+14 unit tests, `extract/environment.test.ts` (new). Worth calling out
+specifically: the first version of the "never touches a real `.env`" test
+asserted that a secret *value* never leaks — and that test **passed even
+with the filename guard deliberately broken** (the regex only ever
+captures the key before `=`, so the value-discarding property held
+regardless of which files got scanned; the guard and the value-discard are
+two independent protections, and the test was only exercising one of
+them). Rewritten to assert that a variable name existing *only* in a real
+`.env` never appears anywhere in the output at all — that version
+correctly failed once the guard was disabled, with the failure output
+showing the leaked node created from `.env`'s content in full, and passed
+once restored. A useful reminder mid-session: a revert-and-check is only as
+strong as what the assertion actually pins down, not just whether *some*
+assertion in the vicinity happens to fail.
+
+`packages/core`: 176 tests / 22 files. Both packages: **207 tests**.
+
+## 29. `architecture/overview.md` narrative synthesis (2026-08-16)
+
+The last stage-6 gap named throughout this document ("no matching node
+type yet"). Unlike every other synthesized type, a narrative architecture
+overview is inherently one holistic thing per project, not an atomic fact
+— genuinely different in kind, not just another category to add to a list.
+
+### What ships
+
+- **New node type `architecture-overview`** (`types.ts`, prefix `ARCH` —
+  same family as `component`/`boundary`/`deployment-unit`), added to
+  `synthesize.ts`'s `SYNTHESIZABLE_TYPES` and wired into `render.ts` →
+  `architecture/overview.md`, reserved in `PKR_SPEC.md` §1's directory
+  vocabulary since early in the project and empty until now.
+- **Prompt change** (`SYSTEM_PROMPT`, `synthesize.ts`): describes the type
+  explicitly as "NOT another atomic fact like the types above," instructs
+  the model to propose it only when it has cross-cutting signal (not just
+  one file), and caps it at one per response — rules 4/5/6 each got a
+  one-line addendum (domain tag convention, the cap, and that a revision
+  should typically `supersedes` the previous one) rather than a separate
+  rules section, keeping the existing seven-type instruction shape intact.
+- **Independent code-level enforcement**, not just the prompt instruction:
+  a second (or later) `architecture-overview` candidate in one response is
+  routed to `skipped` with a specific reason, the same distrust-the-model
+  posture already applied to evidence paths and `supersedes` IDs in this
+  same function — a prompt instruction is a request, not a guarantee.
+- Otherwise goes through the exact same pipeline as every other inferred
+  type: evidence verification, weak-grounding tiering, `supersedes`
+  reconciliation (§19) all apply unchanged — no special-casing needed
+  beyond the one cap.
+
+### Verified live with a real API call
+
+Built a small but structurally real fixture (Express app: `app.js` mounting
+`/auth` and `/points` routers, a `pointsService.js` with a deliberately
+planted, non-obvious design decision — FIFO batch consumption on
+redemption — and a Mongoose model) and ran real `pkr export` against it.
+Result: exactly one `architecture-overview` node, confidence honestly at
+0.5, evidence citing the four files that actually mattered
+(`app.js`/`pointsService.js`/`PointsBatch.js`/`README.md`), and the
+narrative itself correctly named FIFO batch consumption as "the core
+architectural decision" — the model picked up the planted design
+rationale, not just surface structure. Only one candidate was proposed in
+the first place (the prompt instruction alone was sufficient here), so this
+run validates the prompt; the code-level cap is validated separately via
+the regression test below, deliberately, since a single real call proving
+the happy path says nothing about what happens when a model doesn't
+comply.
+
+### Testing
+
+4 unit tests (`synthesize.test.ts`) — accepts a single evidence-grounded
+node normally; a REGRESSION test forcing two candidates through a fake LLM
+response, confirming only the first is kept and the second lands in
+`skipped` with the specific "only one... kept per synthesis run" reason
+(verified by hand: removing the enforcement code turns exactly that one
+test red, nothing else); the same evidence-verification path rejects an
+architecture-overview claiming an unshown path exactly like it would for
+any other type. 1 render-level test (`render.test.ts`) confirming the type
+lands in `architecture/overview.md`.
+
+`packages/core`: 180 tests / 22 files. Both packages: **211 tests**.

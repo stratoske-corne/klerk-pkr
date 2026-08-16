@@ -8,8 +8,9 @@
  * MVP substitute for it).
  *
  * Only applies to deterministic node types (dependency, tech-choice,
- * convention, component, boundary, deployment-unit, api-endpoint, db-table,
- * event, external-service). Stage 6 (inferred) types are handled separately
+ * convention, environment-setup, component, boundary, deployment-unit,
+ * api-endpoint, db-table, event, external-service). Stage 6 (inferred)
+ * types are handled separately
  * by `pkr update` — see update/index.ts — because their titles aren't
  * guaranteed stable across LLM calls the way a directory path or a package
  * name is.
@@ -21,6 +22,7 @@ export const NATURAL_KEY_TYPES: NodeType[] = [
   "dependency",
   "tech-choice",
   "convention",
+  "environment-setup",
   "component",
   "boundary",
   "deployment-unit",

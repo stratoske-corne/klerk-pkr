@@ -24,7 +24,8 @@ import { FileNodeStore } from "./store/fileNodeStore.js";
 import { buildInventory, saveInventory } from "./extract/inventory.js";
 import { analyzeDependencies } from "./extract/dependencies.js";
 import { analyzeStructure } from "./extract/structure.js";
-import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./extract/interfaces.js";
+import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices, analyzeEvents } from "./extract/interfaces.js";
+import { analyzeEnvironment } from "./extract/environment.js";
 import { synthesizeProductAndBehavior, type SkippedSynthesisNode, type WeaklyGroundedNode } from "./extract/synthesize.js";
 import { renderProjectKnowledge } from "./render/render.js";
 import { commitVersion, summarizeChanges, type ChangedNode } from "./versions.js";
@@ -99,8 +100,18 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
   const apiNodes = analyzeApiEndpoints(repoRoot, inventory, allocator, projectId);
   const dbNodes = analyzeDatabaseSchema(repoRoot, inventory, allocator, projectId);
   const externalServiceNodes = analyzeExternalServices(depResult.dependencyNames, allocator, projectId);
+  const eventNodes = analyzeEvents(repoRoot, inventory, allocator, projectId);
+  const environmentNodes = analyzeEnvironment(repoRoot, inventory, allocator, projectId);
 
-  const deterministicNodes = [...depResult.nodes, ...structureNodes, ...apiNodes, ...dbNodes, ...externalServiceNodes];
+  const deterministicNodes = [
+    ...depResult.nodes,
+    ...structureNodes,
+    ...apiNodes,
+    ...dbNodes,
+    ...externalServiceNodes,
+    ...eventNodes,
+    ...environmentNodes,
+  ];
   for (const node of deterministicNodes) {
     store.upsertNode(node);
   }

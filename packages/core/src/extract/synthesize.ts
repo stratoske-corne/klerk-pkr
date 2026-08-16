@@ -42,6 +42,7 @@ const SYNTHESIZABLE_TYPES = [
   "invariant",
   "edge-case",
   "error-behavior",
+  "architecture-overview",
 ] as const;
 
 const SynthesizedNode = z.object({
@@ -79,14 +80,15 @@ TASK: propose knowledge nodes of these types only:
 - invariant: a condition that must always hold
 - edge-case: a boundary condition the code explicitly handles
 - error-behavior: how the system behaves on a specific failure
+- architecture-overview: a holistic prose narrative describing how the whole system fits together (major components, how they interact, key architectural decisions) — NOT another atomic fact like the types above. Propose AT MOST ONE of these per response, and only if you have enough signal across multiple observed facts/excerpts to describe the system as a whole, not just one file or feature.
 
 RULES:
 1. Every node must be grounded in the observed facts or excerpts you were given. Never invent functionality with no evidence in the provided context.
 2. Every evidence "path" you give MUST be copied exactly from a file path that appears in the observed facts or an excerpt header you were given. Never invent a path. If you cannot point to a real path, do not propose the node.
 3. Assign an honest confidence from 0.0 to 1.0. Moderate signal deserves a moderate score (e.g. 0.4–0.6) — do not default to high confidence.
-4. Assign a short "domain" tag (2–20 characters, e.g. "AUTH", "PAYMENTS", "USERS") grouping related nodes; reuse the same tag for nodes in the same feature area.
-5. Propose at most 40 nodes, fewer if the evidence doesn't support more. If a category has no real signal (e.g. no evidence at all of business rules), omit it — do not guess to fill a quota.
-6. If <existing_knowledge> is present: it lists knowledge already recorded from a previous analysis of this same project. Compare it against what the current excerpts/facts actually show. If a node you're proposing now updates, corrects, or replaces one of those existing items (e.g. a threshold changed, a rule was refined), set "supersedes" to the exact existing ID(s) it replaces — copied exactly from an ID shown in <existing_knowledge>, never invented. If an existing item is still accurate and nothing about it changed, do not re-propose it at all — silence about something unchanged is fine, it stays as-is. Only use "supersedes" when you have a new node whose content actually contradicts or updates the old one; do not use it just because a topic is related.
+4. Assign a short "domain" tag (2–20 characters, e.g. "AUTH", "PAYMENTS", "USERS") grouping related nodes; reuse the same tag for nodes in the same feature area. For "architecture-overview" use "ARCHITECTURE".
+5. Propose at most 40 nodes, fewer if the evidence doesn't support more. If a category has no real signal (e.g. no evidence at all of business rules), omit it — do not guess to fill a quota. "architecture-overview" is capped at 1, not 40 — see its description above.
+6. If <existing_knowledge> is present: it lists knowledge already recorded from a previous analysis of this same project. Compare it against what the current excerpts/facts actually show. If a node you're proposing now updates, corrects, or replaces one of those existing items (e.g. a threshold changed, a rule was refined), set "supersedes" to the exact existing ID(s) it replaces — copied exactly from an ID shown in <existing_knowledge>, never invented. If an existing item is still accurate and nothing about it changed, do not re-propose it at all — silence about something unchanged is fine, it stays as-is. Only use "supersedes" when you have a new node whose content actually contradicts or updates the old one; do not use it just because a topic is related. A revised "architecture-overview" should almost always supersede the previous one, if one is shown in <existing_knowledge>.
 7. Output ONLY raw JSON matching exactly this shape — no markdown code fences, no commentary before or after:
 {"nodes":[{"type":"requirement","title":"...","content":"...","confidence":0.0,"domain":"...","evidence":[{"path":"...","note":"..."}],"supersedes":["EXISTING-ID"]}]}
 ("supersedes" is optional — omit it entirely for a node that isn't replacing anything.)`;
@@ -398,6 +400,11 @@ export async function synthesizeProductAndBehavior(
   const skipped: SkippedSynthesisNode[] = [];
   const weaklyGrounded: WeaklyGroundedNode[] = [];
   const supersedesClaims: SupersedeClaim[] = [];
+  // The prompt asks for at most one "architecture-overview" node, but the
+  // model is never trusted to actually follow an instruction like that —
+  // same discipline as evidence paths and supersedes IDs above. Enforced
+  // here regardless of what the prompt says.
+  let architectureOverviewAccepted = false;
 
   for (const candidate of validation.data.nodes) {
     const verifiedEvidence = candidate.evidence.filter((e) => knownPaths.has(e.path)).map((e) => ({ path: e.path }));
@@ -405,6 +412,14 @@ export async function synthesizeProductAndBehavior(
     if (verifiedEvidence.length === 0) {
       skipped.push({ title: candidate.title, reason: "no verifiable evidence path (none of the claimed paths were ever shown to the model)" });
       continue;
+    }
+
+    if (candidate.type === "architecture-overview") {
+      if (architectureOverviewAccepted) {
+        skipped.push({ title: candidate.title, reason: "only one architecture-overview node is kept per synthesis run — this one was extra" });
+        continue;
+      }
+      architectureOverviewAccepted = true;
     }
 
     // ARCHITECTURE.md §19 — an invalid supersedes target is dropped from

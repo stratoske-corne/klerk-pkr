@@ -194,8 +194,8 @@ interface EvidenceRef {
 
 type NodeType =
   | "requirement" | "user-flow" | "domain-concept"       // product/
-  | "component" | "boundary" | "deployment-unit"          // architecture/
-  | "tech-choice" | "convention" | "dependency"            // implementation/
+  | "component" | "boundary" | "deployment-unit" | "architecture-overview" // architecture/
+  | "tech-choice" | "convention" | "dependency" | "environment-setup" // implementation/
   | "api-endpoint" | "db-table" | "event" | "external-service" // interfaces/
   | "business-rule" | "invariant" | "edge-case" | "error-behavior" // behavior/
   | "decision";                                             // decisions/
@@ -257,8 +257,8 @@ digits (extend to 4 if a domain exceeds 999 nodes).
 | `REQ` | requirement |
 | `FLOW` | user-flow |
 | `DOM` | domain-concept |
-| `ARCH` | component, boundary, deployment-unit |
-| `TECH` | tech-choice, convention, dependency |
+| `ARCH` | component, boundary, deployment-unit, architecture-overview |
+| `TECH` | tech-choice, convention, dependency, environment-setup |
 | `API` | api-endpoint |
 | `DB` | db-table |
 | `EVT` | event |
