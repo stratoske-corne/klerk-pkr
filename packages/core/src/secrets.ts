@@ -23,8 +23,19 @@ const SECRET_PATTERNS: SecretPattern[] = [
   { reason: "Google API key", pattern: /AIza[0-9A-Za-z_-]{35}/g },
   { reason: "generic bearer/JWT", pattern: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
   {
+    // Deliberately no leading `\b` before the keyword group: a `\b` there
+    // requires a non-word character immediately before "secret"/"token"/etc,
+    // which fails on the single most common real .env shape — a keyword
+    // compounded onto a prefix with no separator that counts as a word
+    // boundary (`ANTHROPIC_API_KEY=`, `DATABASE_PASSWORD=`, `JWT_SECRET=`,
+    // `jwtSecret =`) — because `_` and case changes are still "word"
+    // characters to `\b`. Found during a deliberate security self-review,
+    // not a fixture: every one of those four shapes silently passed through
+    // this write-gate unredacted. `\s*[:=]` immediately after the keyword
+    // still keeps this from matching prose ("password hashing" has no `=`
+    // right after "password").
     reason: "assigned high-entropy secret-shaped value",
-    pattern: /\b(?:secret|token|api[_-]?key|password|passwd|pwd)\s*[:=]\s*["']?([A-Za-z0-9+/=_-]{16,})["']?/gi,
+    pattern: /(?:secret|token|api[_-]?key|password|passwd|pwd)\s*[:=]\s*["']?([A-Za-z0-9+/=_-]{16,})["']?/gi,
   },
 ];
 

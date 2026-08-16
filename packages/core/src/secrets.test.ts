@@ -27,6 +27,27 @@ describe("scanForSecrets", () => {
     const matches = scanForSecrets("This module handles user authentication and password hashing.");
     expect(matches).toHaveLength(0);
   });
+
+  // REGRESSION (found via a deliberate security self-review, not a fixture):
+  // the generic pattern used to require a `\b` right before the keyword,
+  // which fails whenever the keyword is compounded onto a prefix with no
+  // real word-boundary before it (`_` and a case change both still count as
+  // "word" to `\b`) — silently missing the single most common real .env
+  // variable shape.
+  it("detects a prefixed env-var secret ('ANTHROPIC_API_KEY=...')", () => {
+    const matches = scanForSecrets("ANTHROPIC_API_KEY=sk-ant-api03-realisticlookingvalue1234567890");
+    expect(matches.some((m) => m.reason === "assigned high-entropy secret-shaped value")).toBe(true);
+  });
+
+  it("detects a prefixed env-var secret ('DATABASE_PASSWORD=...')", () => {
+    const matches = scanForSecrets("DATABASE_PASSWORD=correcthorsebatterystaple1234");
+    expect(matches.some((m) => m.reason === "assigned high-entropy secret-shaped value")).toBe(true);
+  });
+
+  it("detects a camelCase compound secret identifier ('jwtSecret = ...')", () => {
+    const matches = scanForSecrets('jwtSecret = "correcthorsebatterystaple1234"');
+    expect(matches.some((m) => m.reason === "assigned high-entropy secret-shaped value")).toBe(true);
+  });
 });
 
 describe("redactSecrets", () => {
