@@ -25,7 +25,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { KnowledgeNode, Manifest, NodeType } from "../types.js";
+import type { KnowledgeNode, KnowledgeEdge, Manifest, NodeType } from "../types.js";
+import { computeSupersededIds } from "../supersede.js";
 
 export type ContextTarget = "claude" | "codex" | "generic";
 
@@ -44,6 +45,28 @@ const SECTION_GROUPS: Array<{ heading: string; types: NodeType[] }> = [
   { heading: "Prior decisions", types: ["decision"] },
 ];
 
+function renderStalenessNote(staleness: StalenessCheck): string[] {
+  if (staleness === null) {
+    return [
+      "> ⚠ **Staleness unknown:** couldn't check this snapshot against the current repository state",
+      "> (no baseline inventory to diff against, or the original repo root wasn't reachable from here —",
+      "> this can happen with a portability copy of `.projectknowledge/`). Run `pkr update <repo>` from",
+      "> the repository root if you're unsure whether this reflects the current code.",
+      "",
+    ];
+  }
+  if (staleness.changedFileCount === 0) {
+    return ["> ✓ No file changes detected since this PKR was last generated/updated — this context should be fresh.", ""];
+  }
+  const n = staleness.changedFileCount;
+  return [
+    `> ⚠ **Stale:** ${n} file(s) have changed in the repository since this PKR was last generated/updated.`,
+    "> Some of what follows may no longer match the current code. Run `pkr update <repo>` from the",
+    "> repository root before trusting this for anything load-bearing.",
+    "",
+  ];
+}
+
 function renderNode(node: KnowledgeNode): string {
   const parts = [`### ${node.title} \`${node.id}\``, "", `Status: ${node.status}`];
   if (node.status === "inferred" && node.confidence !== null) parts.push(`Confidence: ${node.confidence.toFixed(2)}`);
@@ -54,13 +77,37 @@ function renderNode(node: KnowledgeNode): string {
   return parts.join("\n").trimEnd() + "\n";
 }
 
+/**
+ * File-level drift since this PKR was last generated/updated, computed by
+ * the caller (`runContext`) via the same `diffInventory` machinery `pkr
+ * update` itself uses (ARCHITECTURE.md §2) — `null` when it couldn't be
+ * determined (e.g. a portability copy with no `.knowledge/inventory.json`,
+ * or the original repo root isn't reachable from here) rather than false
+ * confidence one way or the other.
+ */
+export type StalenessCheck = { changedFileCount: number } | null;
+
 export interface RenderContextInput {
   outDir: string;
   target: ContextTarget;
   manifest: Manifest;
   nodes: KnowledgeNode[];
-  /** How long ago this PKR was generated — surfaced prominently, since staleness is the main risk of a continuation package (no `pkr update` yet — ARCHITECTURE.md §0). */
+  /**
+   * Used only to exclude superseded (non-confirmed) nodes — ARCHITECTURE.md
+   * §19. Found missing entirely (this render path never received edges at
+   * all) while investigating whether the exact §16 Run 4 contradiction could
+   * still reach an agent through `pkr context` after `render.ts`'s fix —
+   * it could, since this is a separate render path with its own node
+   * selection. Unlike `render.ts`'s `superseded.md`, a superseded node is
+   * just omitted here, not kept in a dedicated section: this file is a
+   * single-purpose continuation aid, not the permanent record — that's the
+   * main PKR's `.knowledge/*.jsonl` / `superseded.md`, which `pkr context`
+   * is only ever a derived view of.
+   */
+  edges: KnowledgeEdge[];
+  /** How long ago this PKR was generated — surfaced prominently, since staleness is the main risk of a continuation package. */
   generatedAt: string;
+  staleness: StalenessCheck;
 }
 
 export interface RenderContextResult {
@@ -69,8 +116,11 @@ export interface RenderContextResult {
 }
 
 export function renderContextPackage(input: RenderContextInput): RenderContextResult {
-  const { outDir, target, manifest, nodes } = input;
+  const { outDir, target, manifest } = input;
   const filename = TARGET_FILENAMES[target];
+
+  const supersededIds = computeSupersededIds(input.nodes, input.edges);
+  const nodes = input.nodes.filter((n) => !supersededIds.has(n.id));
 
   const lines: string[] = [
     `# Continuing work on ${manifest.project.name}`,
@@ -86,9 +136,12 @@ export function renderContextPackage(input: RenderContextInput): RenderContextRe
     `Reconstruction level this PKR supports: **${manifest.reconstruction.target_level}** (PKR_SPEC.md §3).`,
     `Generated: ${input.generatedAt} from source commit ${manifest.knowledge.source_commit ?? "(unknown)"}.`,
     "",
-    "> ⚠ **Staleness risk:** this snapshot reflects the repository as of the commit above. `pkr update`",
-    "> (incremental re-sync) doesn't exist yet (ARCHITECTURE.md §0) — if the codebase has changed since",
-    "> generation, re-run `pkr export` before trusting this over the live source for anything load-bearing.",
+    ...renderStalenessNote(input.staleness),
+    "**When you finish making changes in this session:** run `pkr update <repo>` from the repository",
+    "root. It re-syncs this knowledge base against what actually changed, prints a semantic diff (what",
+    "was added/modified/removed, and anything that conflicts with human-confirmed knowledge), and keeps",
+    "the *next* session's context accurate instead of stale. Review the diff before moving on — this is",
+    "how project knowledge accumulates across sessions and across different agents/tools.",
     "",
   ];
 

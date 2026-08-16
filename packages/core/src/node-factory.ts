@@ -49,6 +49,8 @@ export function makeInferredNode(
     content: string;
     confidence: number;
     evidence: EvidenceRef[];
+    /** ID of a prior inferred node this one updates/replaces — ARCHITECTURE.md §19 (`pkr update --llm` reconciliation). Verified by the caller before being passed in; this helper trusts it. */
+    supersedes?: string | null;
   },
 ): TNode {
   return makeNode(allocator, projectId, domain, { ...input, status: "inferred" });

@@ -15,12 +15,17 @@
  * future optimization (ARCHITECTURE.md §2), not required for this to be
  * correct.
  *
- * Stage 6 on update is intentionally additive-only in this slice: newly
- * proposed inferred nodes are added; existing inferred nodes (confirmed or
- * not) are left untouched rather than risk deleting a still-valid fact.
- * That's a real known gap — see the module-level TODO below — traded
- * deliberately for the much safer failure mode (duplication you can spot
- * and merge by hand, vs. silent loss).
+ * Stage 6 on update used to be purely additive — newly proposed inferred
+ * nodes were added; existing ones were never touched, which shipped a real,
+ * visible bug (ARCHITECTURE.md §16 Run 4: a corrected fact and the stale
+ * fact it replaced ended up side by side in the same rendered file, actively
+ * contradicting each other). Reconciliation (ARCHITECTURE.md §19) fixes
+ * this: stage 6 is shown the current inferred nodes and can mark ones it
+ * replaces via `supersedes`; `reconcileInferredNodes.ts` turns that into
+ * real edges, and `render.ts` keeps a stale fact out of the main files
+ * (into `superseded.md` instead) without ever deleting it. Still
+ * conservative by design: nothing is retired without the model positively
+ * saying so this call — see reconcileInferredNodes.ts's module doc.
  */
 
 import * as fs from "node:fs";
@@ -33,10 +38,11 @@ import { buildInventory, saveInventory, loadInventory } from "../extract/invento
 import { analyzeDependencies } from "../extract/dependencies.js";
 import { analyzeStructure } from "../extract/structure.js";
 import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "../extract/interfaces.js";
-import { synthesizeProductAndBehavior, type SkippedSynthesisNode } from "../extract/synthesize.js";
+import { synthesizeProductAndBehavior, type SkippedSynthesisNode, type WeaklyGroundedNode } from "../extract/synthesize.js";
 import { renderProjectKnowledge } from "../render/render.js";
 import { diffInventory, hasChanges, type InventoryDiff } from "./diffInventory.js";
 import { mergeDeterministicNodes, type NodeMergeReport } from "./mergeNodes.js";
+import { reconcileInferredNodes, type InferredReconcileReport } from "./reconcileInferredNodes.js";
 import type { LlmClient } from "../llm/client.js";
 import type { KnowledgeNode } from "../types.js";
 
@@ -51,6 +57,11 @@ export interface LlmUpdateReport {
   ranSuccessfully: boolean;
   added: KnowledgeNode[];
   skipped: SkippedSynthesisNode[];
+  weaklyGrounded: WeaklyGroundedNode[];
+  /** ARCHITECTURE.md §19 — non-confirmed prior nodes this call replaced (edges created, target kept but excluded from the main rendered files). */
+  superseded: InferredReconcileReport["superseded"];
+  /** ARCHITECTURE.md §19 — confirmed prior nodes a new node contradicted (edges created, target completely untouched, needs a human). */
+  conflicts: InferredReconcileReport["conflicts"];
   error?: string;
 }
 
@@ -126,26 +137,59 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
   if (options.llm) {
     try {
       const projectName = depResult.projectName ?? projectId;
+      // Split what's already in the store: deterministic facts are
+      // "observed_facts" material same as always; existing *inferred* nodes
+      // are what reconciliation (ARCHITECTURE.md §19) needs shown separately
+      // so the model can recognize when a new fact updates one of them,
+      // rather than getting folded into the generic observed-facts summary.
+      const storeNodes = store.listNodes();
+      const deterministicNodes = storeNodes.filter((n) => n.status !== "inferred");
+      const existingInferredNodes = storeNodes.filter((n) => n.status === "inferred");
+
       const result = await synthesizeProductAndBehavior(
         repoRoot,
         freshInventory,
-        store.listNodes(),
+        deterministicNodes,
         projectId,
         projectName,
         depResult.projectDescription,
         allocator,
         options.llm,
+        existingInferredNodes,
       );
       for (const node of result.nodes) store.upsertNode(node);
-      llmReport = { ranSuccessfully: true, added: result.nodes, skipped: result.skipped };
+      const reconcile = reconcileInferredNodes(store, projectId, result.nodes, result.supersedesClaims);
+      llmReport = {
+        ranSuccessfully: true,
+        added: result.nodes,
+        skipped: result.skipped,
+        weaklyGrounded: result.weaklyGrounded,
+        superseded: reconcile.superseded,
+        conflicts: reconcile.conflicts,
+      };
     } catch (err) {
-      llmReport = { ranSuccessfully: false, added: [], skipped: [], error: (err as Error).message };
+      llmReport = { ranSuccessfully: false, added: [], skipped: [], weaklyGrounded: [], superseded: [], conflicts: [], error: (err as Error).message };
     }
   }
 
+  // ARCHITECTURE.md §16 Run 4 process finding, fixed here: if stage 6 was
+  // requested and failed, don't advance the inventory baseline. Previously
+  // this saved unconditionally, so a transient LLM failure (rate limit,
+  // network, overload) permanently forfeited that update's semantic-layer
+  // sync — the next `pkr update --llm` run would recompute the same
+  // (now-baselined) file diff as empty and short-circuit as "up to date"
+  // above, silently never re-attempting stage 6 unless something else
+  // changed first. Deterministic results are saved either way (below):
+  // re-running `mergeDeterministicNodes` against an already-merged store on
+  // a retry is a safe no-op (natural-key matching sees those facts as
+  // already up to date), so there's no cost to keeping them.
+  const llmFailed = options.llm != null && llmReport?.ranSuccessfully === false;
+
   allocator.save();
   store.save();
-  saveInventory(knowledgeDir, freshInventory);
+  if (!llmFailed) {
+    saveInventory(knowledgeDir, freshInventory);
+  }
 
   const projectName = depResult.projectName ?? projectId;
   const renderResult = renderProjectKnowledge({

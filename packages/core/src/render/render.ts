@@ -15,6 +15,7 @@ import yaml from "js-yaml";
 import type { KnowledgeNode, KnowledgeEdge, Manifest, NodeType } from "../types.js";
 import { redactSecrets, type SecretMatch } from "../secrets.js";
 import { computeAchievableLevel, groupByType } from "../levels.js";
+import { computeSupersededIds } from "../supersede.js";
 
 export interface FileTarget {
   dir: string;
@@ -132,11 +133,20 @@ export function renderProjectKnowledge(input: RenderInput): RenderResult {
   const written: string[] = [];
   let totalRedactions = 0;
 
+  // ARCHITECTURE.md §19 — a node that's the target of a `supersedes` edge is
+  // excluded from its normal section file (see supersede.ts for the shared
+  // confirmed-node exception). Excluded here, not deleted from the store:
+  // still present in `.knowledge/*.jsonl` and rendered into `superseded.md`
+  // below, so the audit trail survives a portability copy that only ever
+  // sees the rendered Markdown (PKR_SPEC.md §8).
+  const nodesById = new Map(input.nodes.map((n) => [n.id, n]));
+  const supersededIds = computeSupersededIds(input.nodes, input.edges);
+
   // --- group nodes by target file, skip decisions (rendered per-node) ----
   const byFile = new Map<string, { target: FileTarget; nodes: KnowledgeNode[] }>();
-  const decisionNodes = input.nodes.filter((n) => n.type === "decision");
+  const decisionNodes = input.nodes.filter((n) => n.type === "decision" && !supersededIds.has(n.id));
   for (const node of input.nodes) {
-    if (node.type === "decision") continue;
+    if (node.type === "decision" || supersededIds.has(node.id)) continue;
     const target = NODE_TYPE_TARGET[node.type];
     if (!target) continue;
     const key = `${target.dir}/${target.file}`;
@@ -151,6 +161,7 @@ export function renderProjectKnowledge(input: RenderInput): RenderResult {
     interfaces: false,
     behavior: false,
     decisions: false,
+    superseded: false,
   };
 
   for (const [relPath, { target, nodes }] of [...byFile.entries()].sort()) {
@@ -189,34 +200,112 @@ export function renderProjectKnowledge(input: RenderInput): RenderResult {
     sectionsPresent.decisions = true;
   }
 
+  // --- superseded (ARCHITECTURE.md §19) -------------------------------------
+  if (supersededIds.size > 0) {
+    const supersededBy = new Map<string, KnowledgeNode[]>(); // target id -> the new node(s) that superseded it
+    for (const edge of input.edges) {
+      if (edge.relationship_type !== "supersedes" || !supersededIds.has(edge.target_node)) continue;
+      const source = nodesById.get(edge.source_node);
+      if (!source) continue;
+      if (!supersededBy.has(edge.target_node)) supersededBy.set(edge.target_node, []);
+      supersededBy.get(edge.target_node)!.push(source);
+    }
+
+    const byHeading = new Map<string, KnowledgeNode[]>();
+    for (const id of supersededIds) {
+      const node = nodesById.get(id);
+      if (!node) continue;
+      const heading = NODE_TYPE_TARGET[node.type]?.heading ?? "Other";
+      if (!byHeading.has(heading)) byHeading.set(heading, []);
+      byHeading.get(heading)!.push(node);
+    }
+
+    const sections: string[] = [];
+    let supersededRedactions = 0;
+    for (const [heading, nodes] of [...byHeading.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      sections.push(`## ${heading}`, "");
+      for (const raw of [...nodes].sort((a, b) => a.id.localeCompare(b.id))) {
+        const titleRedacted = redactSecrets(raw.title);
+        const contentRedacted = redactSecrets(raw.content);
+        supersededRedactions += titleRedacted.redactions.length + contentRedacted.redactions.length;
+        const clean: KnowledgeNode = { ...raw, title: titleRedacted.text, content: contentRedacted.text };
+        const replacedBy = (supersededBy.get(raw.id) ?? [])
+          .map((n) => `\`${n.title}\` \`${n.id}\``)
+          .join(", ");
+        sections.push(
+          renderNodeSection(clean, [...titleRedacted.redactions, ...contentRedacted.redactions]).trimEnd(),
+          replacedBy ? `\n→ superseded by ${replacedBy}\n` : "",
+        );
+      }
+    }
+
+    const frontMatter = ["---", "generated_by: pkr-cli", `generated_at: ${generatedAt}`, "---", ""].join("\n");
+    const intro = [
+      "# Superseded Knowledge",
+      "",
+      "Facts that a later analysis replaced or corrected. Kept here rather than deleted —",
+      "PKR_SPEC.md §8's portability guarantee and §4.2's audit-trail principle both apply",
+      "to inferred knowledge, not just deterministic facts. Not shown in the main section",
+      "files above, so current knowledge doesn't sit next to what it replaced.",
+      "",
+    ].join("\n");
+    writeFile(input.outDir, "superseded.md", `${frontMatter}${intro}\n${sections.join("\n")}`, written);
+    totalRedactions += supersededRedactions;
+    sectionsPresent.superseded = true;
+  }
+
   // --- traceability --------------------------------------------------------
+  // `JSON.stringify(obj, keysArray, indent)` does NOT mean "sort these keys" —
+  // the second argument is a property allowlist applied at every nesting
+  // level, not just the top one. Passing top-level keys as that allowlist
+  // silently strips any *nested* object down to `{}`, since none of its own
+  // property names (e.g. "target", "relationship_type") are in the list.
+  // `source-map.json` never showed this (its values are arrays of plain
+  // strings, and array elements aren't filtered by the allowlist) but
+  // `knowledge-map.json` did the moment this codebase produced its first-ever
+  // non-empty edge list — every entry silently became `{}`. Found via a real
+  // `pkr update --llm` call (ARCHITECTURE.md §19/§16 Run 4 follow-up), not a
+  // fixture. Fixed by sorting the keys into a fresh object (insertion order is
+  // preserved by JS for string keys) and passing `null` as the replacer.
+  const sortedByKey = <T>(obj: Record<string, T>): Record<string, T> => {
+    const sorted: Record<string, T> = {};
+    for (const key of Object.keys(obj).sort()) sorted[key] = obj[key];
+    return sorted;
+  };
+
   const sourceMap: Record<string, string[]> = {};
   for (const node of input.nodes) {
     if (node.evidence.length === 0) continue;
     sourceMap[node.id] = node.evidence.map((e) => (e.symbol ? `${e.path}::${e.symbol}` : e.path));
   }
-  writeFile(
-    input.outDir,
-    "traceability/source-map.json",
-    JSON.stringify(sourceMap, Object.keys(sourceMap).sort(), 2),
-    written,
-  );
+  writeFile(input.outDir, "traceability/source-map.json", JSON.stringify(sortedByKey(sourceMap), null, 2), written);
 
   const knowledgeMap: Record<string, Array<{ target: string; relationship_type: string }>> = {};
   for (const edge of input.edges) {
     if (!knowledgeMap[edge.source_node]) knowledgeMap[edge.source_node] = [];
     knowledgeMap[edge.source_node].push({ target: edge.target_node, relationship_type: edge.relationship_type });
   }
-  writeFile(
-    input.outDir,
-    "traceability/knowledge-map.json",
-    JSON.stringify(knowledgeMap, Object.keys(knowledgeMap).sort(), 2),
-    written,
-  );
+  writeFile(input.outDir, "traceability/knowledge-map.json", JSON.stringify(sortedByKey(knowledgeMap), null, 2), written);
 
   // --- reconstruction level -------------------------------------------------
   const nodesByType = groupByType(input.nodes);
-  const achievedLevel = computeAchievableLevel({ nodesByType, hasReconstructionArtifacts: false });
+  // `hasReconstructionArtifacts` stays false here, correctly — `.reconstruction/`
+  // is `pkr reconstruct`'s output, generated in a later, separate step this
+  // render call has no way to know about yet, so level 4/5 aren't achievable
+  // from `pkr export`/`pkr update` alone today. That's a real, known
+  // limitation (not this fix's scope — a future `pkr reconstruct` writing an
+  // achieved level back into this manifest is the honest way to close it,
+  // ARCHITECTURE.md §18/§20), separate from `hasValidationCriteria`, which
+  // levels.ts now needs as a genuinely distinct signal from
+  // `hasReconstructionArtifacts` (§18) — wired to a real signal already
+  // available here (stage 2's extracted build/test commands) rather than
+  // left hardcoded, so the two flags can never silently collapse back into
+  // one again.
+  const achievedLevel = computeAchievableLevel({
+    nodesByType,
+    hasReconstructionArtifacts: false,
+    hasValidationCriteria: Object.keys(input.validationCommands ?? {}).length > 0,
+  });
 
   // --- manifest --------------------------------------------------------------
   const nodesSorted = [...input.nodes].sort((a, b) => a.id.localeCompare(b.id));

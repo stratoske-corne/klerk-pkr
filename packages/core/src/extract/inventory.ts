@@ -56,6 +56,13 @@ const ALWAYS_IGNORE = [
   ".turbo",
   ".cache",
   ".projectknowledge",
+  // Klerk's own generated output directories (`pkr context` / `pkr reconstruct`,
+  // default locations — ARCHITECTURE.md). Without this, writing a context or
+  // reconstruction package inside the repo shows up as "drift" the very next
+  // time anything diffs the inventory (`pkr context`'s staleness check, `pkr
+  // update`'s file diff) — a false, self-inflicted signal, not real source change.
+  ".context",
+  ".reconstruction",
 ];
 
 const SOURCE_EXTENSIONS = new Set([

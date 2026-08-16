@@ -25,7 +25,7 @@ import { buildInventory, saveInventory } from "./extract/inventory.js";
 import { analyzeDependencies } from "./extract/dependencies.js";
 import { analyzeStructure } from "./extract/structure.js";
 import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./extract/interfaces.js";
-import { synthesizeProductAndBehavior, type SkippedSynthesisNode } from "./extract/synthesize.js";
+import { synthesizeProductAndBehavior, type SkippedSynthesisNode, type WeaklyGroundedNode } from "./extract/synthesize.js";
 import { renderProjectKnowledge } from "./render/render.js";
 import type { LlmClient } from "./llm/client.js";
 
@@ -42,6 +42,8 @@ export interface SynthesisReport {
   nodeCount: number;
   skipped: SkippedSynthesisNode[];
   excerptFiles: string[];
+  /** Accepted nodes whose evidence never included a file the model actually read (excerpt content) — see extract/synthesize.ts's WeaklyGroundedNode doc. */
+  weaklyGrounded: WeaklyGroundedNode[];
   error?: string;
 }
 
@@ -121,6 +123,7 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
         nodeCount: result.nodes.length,
         skipped: result.skipped,
         excerptFiles: result.excerptFiles,
+        weaklyGrounded: result.weaklyGrounded,
       };
     } catch (err) {
       synthesis = {
@@ -128,6 +131,7 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
         nodeCount: 0,
         skipped: [],
         excerptFiles: [],
+        weaklyGrounded: [],
         error: (err as Error).message,
       };
     }

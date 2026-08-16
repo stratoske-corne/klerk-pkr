@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { loadPkr } from "./loadPkr.js";
 import { computeBuildOrder } from "./buildOrder.js";
 import { renderReconstructionPackage } from "./render.js";
+import { computeSupersededIds } from "../supersede.js";
 
 export interface ReconstructOptions {
   pkrDir: string;
@@ -35,7 +36,18 @@ export function runReconstruct(options: ReconstructOptions): ReconstructResult {
     fs.rmSync(outDir, { recursive: true, force: true });
   }
 
-  const { manifest, nodes, source } = loadPkr(pkrDir);
+  const { manifest, nodes: allNodes, edges, source } = loadPkr(pkrDir);
+  // ARCHITECTURE.md §19 — same exclusion as render.ts/context/render.ts,
+  // for the same reason: a superseded (non-confirmed) fact must not sit
+  // next to the current one that replaced it. Found missing here the same
+  // way it was found missing in context/render.ts — this is a third,
+  // independent render path with its own node selection, not a variant of
+  // either of the other two. No dedicated "superseded" output here (unlike
+  // render.ts's superseded.md) — a build spec has no use for facts that are
+  // already known to be wrong, and the permanent record already lives in
+  // the main PKR this was generated from.
+  const supersededIds = computeSupersededIds(allNodes, edges);
+  const nodes = allNodes.filter((n) => !supersededIds.has(n.id));
   const buildOrder = computeBuildOrder(nodes);
 
   const result = renderReconstructionPackage({

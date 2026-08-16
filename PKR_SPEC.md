@@ -69,6 +69,10 @@ The `.projectknowledge/` format must remain, permanently:
     ADR-0001-<slug>.md
     ADR-0002-<slug>.md
 
+  superseded.md                  # nodes replaced via a `supersedes` edge (§4.2, §6) — kept, not
+                                  # deleted, but excluded from the section files above so a stale
+                                  # fact never sits next to the current one that replaced it
+
   reconstruction/                # Generated FROM the above, not hand-authored
     reconstruction.md
     deterministic-constraints.md
@@ -232,7 +236,13 @@ A node is never rendered as bare assertion if its status is anything other than
 - Resolving a conflict either (a) re-confirms the original (the new evidence is
   rejected/explained) or (b) supersedes it — the old node gets `status` unchanged but
   is linked via a `supersedes` edge from the new confirmed node, and stops being
-  rendered as current (still queryable as history).
+  rendered as current (still queryable as history, in `superseded.md` — §1).
+- The same `supersedes` mechanism also fires without a human resolving anything, for
+  *non*-confirmed inferred nodes: a `pkr update --llm` run that recognizes an inferred
+  fact updated or corrected an earlier one (not itself a conflict — no `confirmed`
+  node involved) links the two directly. A `conflicts_with` edge always means "a human
+  needs to look at this"; a `supersedes` edge on a non-confirmed target never required
+  one — see ARCHITECTURE.md §19 for the extraction-side mechanics.
 
 ## 5. Stable IDs
 

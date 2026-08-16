@@ -29,11 +29,23 @@ export function groupByType(nodes: KnowledgeNode[]): Map<NodeType, KnowledgeNode
 
 export interface LevelInput {
   nodesByType: Map<NodeType, KnowledgeNode[]>;
-  /** True once `pkr reconstruct` has produced `.reconstruction/` artifacts (not yet built — see ARCHITECTURE.md M2). */
+  /** True once `pkr reconstruct` has produced `.reconstruction/` artifacts (deterministic-constraints.md etc. — PKR_SPEC.md §3 level 4's own requirement). */
   hasReconstructionArtifacts: boolean;
+  /**
+   * True only when the reconstruction package's acceptance criteria are
+   * machine-checkable per PKR_SPEC.md §3 level 5 specifically — build/test
+   * commands, an endpoint list, a schema list, sufficient for `pkr compare`
+   * to score without human judgment. NOT the same thing as
+   * `hasReconstructionArtifacts` (a package existing at all) — the two used
+   * to be the same flag, which made level 4 impossible to ever observe as
+   * an output (whatever satisfied level 4's own reconstruction-artifacts
+   * condition automatically satisfied level 5 too — ARCHITECTURE.md §18
+   * finding, fixed here by requiring a genuinely distinct signal).
+   */
+  hasValidationCriteria: boolean;
 }
 
-export function computeAchievableLevel({ nodesByType, hasReconstructionArtifacts }: LevelInput): number {
+export function computeAchievableLevel({ nodesByType, hasReconstructionArtifacts, hasValidationCriteria }: LevelInput): number {
   const level1 = any(nodesByType, PRODUCT_TYPES);
   if (!level1) return 0;
 
@@ -47,8 +59,6 @@ export function computeAchievableLevel({ nodesByType, hasReconstructionArtifacts
     level3 && any(nodesByType, IMPLEMENTATION_TYPES) && any(nodesByType, ["api-endpoint"]) && hasReconstructionArtifacts;
   if (!level4) return 3;
 
-  // Level 5 additionally requires machine-checkable validation criteria,
-  // which only exist once the reconstruction package (M2) is built.
-  const level5 = level4 && hasReconstructionArtifacts;
+  const level5 = level4 && hasValidationCriteria;
   return level5 ? 5 : 4;
 }

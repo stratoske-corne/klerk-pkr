@@ -15,13 +15,13 @@ Kept current as code lands, so this document doesn't drift from reality.
 | Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing), DB schema (Prisma + raw SQL `CREATE TABLE` + **Mongoose `Schema`/`model()` pairs**), external services (dependency lookup). The two bolded items were the M3-discovered gaps (§16) — both fixed 2026-08-16, tested against fixtures modeled on the real repo that surfaced them (§16/§18). Event detection not built. (`extract/interfaces.ts`) |
 | Stage 4 — Structure analysis | ✅ built (`extract/structure.ts`) |
 | Stage 5 — Test & environment analysis | ❌ not built |
-| Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against the real repo inventory before a node is accepted — unverifiable ones are dropped and reported, not softened. `architecture/overview.md` narrative synthesis not built (no matching node type yet). |
+| Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against what was actually shown to the model (excerpt content or an observed node's evidence pointer), not the whole repo inventory — unverifiable ones are dropped and reported, weakly-grounded ones (real path, content never shown) are kept but flagged separately, not softened silently. `architecture/overview.md` narrative synthesis not built (no matching node type yet). **2026-08-16, first real (non-standing-in) API validation** (§16 Run 3) found and fixed three gaps in one session, each confirmed by a real API call before being traced and fixed: (1) `buildExcerpts()` silently excluded `docs/` subdirectories, (2) the file with the actual business logic was never an excerpt candidate under any selection rule (new size-based fallback added), (3) evidence verification accepted any real repo file, not just paths actually shown to the model (now tiered: excerpt-backed vs. fact-summary-only, the latter flagged as `weaklyGrounded`). Clean before/after on the same repo+model for (1)+(2): proposed nodes went from surface-level-only to correctly capturing every real business rule. |
 | Stage 7 — Render & write | ✅ built (`render/render.ts`), including the secret write-gate |
 | `pkr export` CLI (aliased `pkr init`) | ✅ built (`packages/cli`), flags: `--out`, `--no-llm`, `--model` |
-| `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. |
-| `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 but is additive-only in this version (doesn't retire stale inferred nodes — known gap, documented in the module). Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
+| `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. **2026-08-16 addition** (the "agent-instruction, not a daemon" automation route, chosen over a file-watcher or git hook — see chat log rationale): the rendered file now (a) tells the agent explicitly to run `pkr update <repo>` when it finishes making changes, and (b) runs a best-effort staleness check (`--repo`, defaults to the PKR dir's parent) reusing `pkr update`'s own `diffInventory` machinery, surfacing a changed-file count or an honest "unknown" rather than silently assuming freshness. Found and fixed a real bug while verifying this live (not just via fixtures): `.context/`/`.reconstruction/` weren't in `extract/inventory.ts`'s `ALWAYS_IGNORE`, so writing a context file counted as drift against *itself* on the very next run — regression-tested in `context/index.test.ts`. |
+| `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 and now reconciles against existing inferred knowledge (§19, implemented 2026-08-16, motivated by a real bug found in §16 Run 4): the model is shown current inferred nodes and can mark ones it replaces via `supersedes`; `update/reconcileInferredNodes.ts` turns that into a `conflicts_with` edge (confirmed target — untouched, human resolves) or a `supersedes` edge (non-confirmed target — kept in the store, excluded from the main rendered files into a new `superseded.md`). Real-call validated same day (§19): correctly proposed the new rules and correctly superseded exactly the one stale node whose content had actually gone wrong, while leaving a related-but-still-accurate node alone. Same real call also exposed and led to fixing a second, older, unrelated bug — `knowledge-map.json` silently rendered every edge as `{}` (a `JSON.stringify` replacer-array misuse dating to M1, only ever visible once a real edge existed to render). Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
-| Automated test suite | ✅ built (`packages/core`, vitest — `npm test` from the repo root runs it via the workspace). 59 tests / 11 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior, `naturalKey`/`diffInventory`, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict), and a `loadPkr` jsonl-vs-markdown-fallback parity test. Not yet covered: stage 4/6 extractors directly (structure.ts, synthesize.ts), `pkr reconstruct`'s render output, the CLI layer itself. |
+| Automated test suite | ✅ built. `packages/core` (vitest): 94 tests / 16 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 11 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Not yet covered: stage 4 directly (structure.ts). |
 | `pkr compare` | ❌ not built |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
@@ -548,9 +548,183 @@ navigate. It does not test scale (this was ~10 source files), doesn't test
 `pkr update`'s incremental loop end-to-end, and the stage 6 step was still me
 standing in for a live API call, not a real one — that substitution has held up
 every time this session, but it's not the same as an independent LLM call with
-no visibility into how the fixture was designed.
+no visibility into how the fixture was designed. Addressed directly by Run 3.
 
-## 17. Product-direction correction: continuation, not reconstruction
+### Run 3 — first real (non-standing-in) LLM call, same `loyalty-points-api` (2026-08-16)
+
+Every prior run carried the same caveat: stage 6 was me reading the repo and
+authoring genuine-but-hand-written synthesis, standing in for a live API call.
+This run removed that substitution — a real `claude-sonnet-5` call, via
+`pkr export` with `ANTHROPIC_API_KEY` set, no hand-authoring, on the same
+synthetic repo Run 2 used (rebuilt identically from source since the scratch
+copy didn't survive between sessions).
+
+**First real call exposed two concrete extractor bugs, not a model-quality
+problem.** `pkr export` succeeded (13 nodes from 5 excerpt files), but the
+proposed business-rule/invariant nodes were shallow — surface facts only
+(404-on-missing-account, refund-uses-order-id-not-a-points-amount), missing
+every one of the six real rules (FIFO order, 540-day expiry, VIP multiplier
+scope, 100-point minimum, and the asymmetric-refund rationale). Traced the
+cause by replaying `buildExcerpts()`'s candidate-selection deterministically
+(no LLM call needed) against the real inventory:
+1. `docs/DECISIONS.md` — the one file explaining *why* the asymmetric refund
+   rule exists — was silently excluded by the "top-level docs" fallback's
+   `!path.includes("/")` check, which rejected every docs subdirectory, not
+   just deeply-nested ones.
+2. `src/services/pointsService.js` — the file with *all six* business rules
+   in its own doc comment — was never a candidate under any of the four
+   selection rules: not a README, not a (wrongly-excluded) doc, not cited as
+   `api-endpoint`/`db-table` evidence, and its filename doesn't match the
+   entry-point regex. Routes/repository files got selected; the actual logic
+   layer didn't.
+
+A third, subtler thing surfaced in the same output: one shallow node cited
+`src/services/pointsService.test.js` as evidence — a file never sent as an
+excerpt at all. It got the path from `summarizeObservedFacts()`, which lists
+every stage 1–4 node's evidence paths as plain text (here, a `convention`
+node about colocated tests). Evidence verification only checked that a
+claimed path exists in the repo inventory, not that the model was actually
+shown that file's content — so a real (and here, correct) path could get
+attached to a claim the model never read, not just inferred from adjacent
+text.
+
+**Fixed same day, separately** (`extract/synthesize.ts`): `knownPaths` no
+longer accepts every path in the repo inventory — only paths the model was
+actually shown, either as excerpt content or as another observed node's
+evidence pointer in the observed-facts summary. That alone closes a real hole
+wider than the specific bug above: the old check would have silently accepted
+*any* real file in the repo as "verified" evidence, including ones never
+mentioned to the model anywhere at all. On top of that, evidence is now
+tiered: excerpt-backed (the model read the file) vs. fact-summary-only (the
+model only saw the path named, never its content) — the latter is still
+accepted (can be legitimate, e.g. citing `package.json` for a fact a stage-2
+dependency node already established) but surfaced distinctly as
+`weaklyGrounded` in `SynthesisResult`/`SynthesisReport`/`LlmUpdateReport` and
+printed by the CLI, so a human reviewing `pkr export`/`pkr update` output
+knows exactly which claims were never content-verified. Three cases
+regression-tested in `extract/synthesize.test.ts` (excerpt-backed → accepted
+clean; fact-summary-only → accepted + flagged; shown-nowhere → rejected
+outright) — each verified by hand to fail without the fix, same discipline as
+every other fix this session. Not re-validated with a fourth live API call —
+the three cases are deterministic path-matching logic, not model behavior, so
+the unit tests are the right level of proof here.
+
+**Fixed both extractor bugs** in `extract/synthesize.ts`'s `buildExcerpts()`:
+docs-subdirectory detection now allows one level down (`docs/*.md`, not just
+bare-root), and a new rule 5 adds the largest remaining source file(s) as a
+generic, language-agnostic "probably where the real logic lives" fallback
+when nothing else surfaces it. Regression-tested in the new
+`extract/synthesize.test.ts` (reverting either fix fails exactly the matching
+tests, verified by hand, same discipline as every other fix this session).
+
+**Re-ran the same real API call after the fix — clean before/after, same
+repo, same model:** 8 excerpt files (was 5), 18 proposed nodes (was 13), and
+this time **all six real business rules were captured correctly**, including
+the asymmetric refund rule verbatim-correct in reasoning: *"Refunds are
+deliberately NOT implemented as inverse-FIFO redemption, because doing so
+could silently remove the wrong batch after intervening purchases/
+redemptions, corrupting the balance in a way that's hard to detect"*
+(confidence 0.95, evidence: `pointsService.js` + `docs/DECISIONS.md`) — plus
+a dedicated invariant node stating the asymmetry "must always be preserved to
+keep the ledger auditable and correct."
+
+**Why this matters more than Run 1/Run 2 despite being a smaller test:** it's
+the first genuinely independent confirmation that a real model, given the
+*correct* inputs, produces the deep synthesis this project has been claiming
+— and it's a controlled before/after on the exact same repo and model, not a
+different run that might differ for unrelated reasons. It also corrects an
+overstatement risk in Run 1/Run 2's conclusions: my own "stand in for stage
+6" methodology always read the whole repo by hand regardless of what the real
+`buildExcerpts()` would select, so those two runs validated a stronger PKR
+than the automated pipeline could actually produce on its own at the time.
+Not re-run: the full blind-reconstruction step (Run 2's subagent) against
+this real-LLM PKR — the direct before/after on `business-rules.md` already
+gives clean, independently-verifiable evidence of what changed and why;
+re-running the ~12-minute blind-reconstruction agent on top wasn't judged
+necessary to confirm the fix, since Run 2 already established that prose of
+this quality is sufficient for one.
+
+### Run 4 — first real `pkr update --llm` validation, same repo (2026-08-16)
+
+Every real-API validation so far (Run 3) tested `pkr export`. `pkr update`'s
+LLM path — arguably the more important one, since it's the actual
+continuation loop §17 is about — had never been exercised with a real call.
+Setup: took the Run 3 repo (real PKR already exported, all 6 rules correctly
+captured), then made a genuinely realistic pair of changes a developer or
+agent would actually make — raised the VIP threshold from $500 to $1,000
+(modifying an *existing* rule) and added a new referral-bonus feature
+(a *new* rule), both with matching `docs/DECISIONS.md` rationale — then ran
+`pkr update --llm` for real.
+
+**Process finding first, before the interesting result:** the very first
+attempt hit the account's spend cap mid-run. Because `runUpdate` persists the
+fresh file-hash baseline (`saveInventory`) unconditionally, *outside* the
+try/catch around the stage-6 call, the failed attempt still advanced the
+baseline to the already-changed code. Retrying immediately then reported
+"✓ Up to date — no file changes detected" and skipped stage 6 entirely
+*without ever having successfully synthesized anything for those changes* —
+a real reliability gap: a transient LLM failure (rate limit, network,
+overload) silently and permanently forfeits that update's semantic-layer
+sync unless something changes again before the next `pkr update` run.
+Worked around for this test by making one more trivial content edit to force
+a fresh diff.
+
+**Fixed 2026-08-16** (`update/index.ts`), exactly the direction sketched
+above: `saveInventory` is now skipped specifically when stage 6 was
+requested and failed (`options.llm` set, `llmReport.ranSuccessfully ===
+false`) — the deterministic merge results are still saved either way
+(re-running `mergeDeterministicNodes` against an already-merged store on a
+retry is a safe no-op, natural-key matching sees those facts as already up
+to date, so there's no cost to keeping them). Effect: a retry with no
+further code changes now genuinely re-attempts stage 6 instead of
+short-circuiting as "up to date." Three new tests in
+`update/index.integration.test.ts` with a `LlmClient` that always throws:
+the baseline doesn't advance on failure and a retry still sees the change
+(reverting the fix reproduces the exact silent-swallow symptom, confirmed
+by hand); deterministic results survive an LLM failure in the same run;
+and a retry succeeds normally once the LLM starts working again, correctly
+becoming genuinely "up to date" only after that. CLI's failure message now
+says so explicitly (`pkr update --llm again to retry`) instead of leaving
+the user to infer it.
+
+**The result, once stage 6 actually ran: it correctly captured both
+changes.** `RULE-POINTS-011` ("VIP threshold raised to $1,000") and
+`RULE-POINTS-016` ("Referral bonus is a flat 200 points on referred
+account's first purchase") were both proposed, correctly grounded in
+`pointsService.js` + `docs/DECISIONS.md`, with an honest confidence (0.60 —
+lower than the other rules, since these are newer/thinner-evidenced changes,
+exactly the calibration the system prompt asks for).
+
+**But this is the clearest, most concrete demonstration yet of the
+documented "additive-only" limitation (ARCHITECTURE.md `update/index.ts`
+module doc) — not hypothetical, directly observed in the rendered output.**
+`pkr update --llm` added 18 *new* nodes; it did not touch, retire, or link
+against any of the 15 nodes from the original export. The result, sitting in
+the same rendered `business-rules.md`, same `node_ids` list, with no
+relationship recorded between them:
+- `RULE-POINTS-002` (original, unchanged): *"Accounts with lifetimeSpendCents
+  >= $500 get a 2x multiplier..."* — **now factually wrong**.
+- `RULE-POINTS-010` (new, this run): *"Accounts with lifetime spend >=
+  $1,000 get a 2x multiplier..."* — same title as -002, correct content.
+- `RULE-POINTS-011` (new, this run): *"VIP threshold raised to $1,000"* —
+  the change itself, as its own node.
+
+A human or an AI agent reading `pkr context`'s output today would see the
+stale $500 claim and the correct $1,000 claim in the same file, same
+section, with nothing marking one as superseded — worse than not having the
+old fact at all, since it now actively contradicts the new one instead of
+just being silently missing. This is exactly why `supersedes` and real
+Knowledge Versioning (PKR_SPEC.md §7, `manifest.yaml`'s `knowledge_version`
+still hardcoded `v0.1` — ARCHITECTURE.md §0) matter beyond bookkeeping: this
+specific failure mode is what they'd prevent.
+
+**Action item, now the clear top priority for the LLM-synthesis path:**
+design and build reconciliation for `pkr update --llm` — likely re-running
+stage 6 with the *existing* inferred nodes shown as prior context (not just
+observed facts) and asking the model to explicitly mark which are
+superseded/still-valid/contradicted, rather than only ever proposing net-new
+nodes. Bigger than every fix so far this session — worth a real design pass
+before writing code, not a quick patch.
 
 Recorded because it changes what gets built next, not just a UI label.
 
@@ -616,4 +790,282 @@ into every PKR's `README.md` and `manifest.yaml`, and the fix depends on decidin
 what actually distinguishes level 4 from level 5 in evidence terms (PKR_SPEC.md §3
 says level 5 needs "machine-checkable validation criteria" — arguably a distinct
 signal from merely having reconstruction artifacts, e.g. whether
-`validation.commands` is populated). Not fixed yet; a candidate for the next slice.
+`validation.commands` is populated).
+
+**Fixed 2026-08-16.** `LevelInput` now takes `hasValidationCriteria` as a
+genuinely separate field from `hasReconstructionArtifacts`, so the two can
+never silently collapse into one flag again — level 4 requires the latter
+(PKR_SPEC.md §3: a reconstruction package with `deterministic-constraints.md`
+exists), level 5 additionally requires the former (machine-checkable
+acceptance criteria specifically). `render.ts`'s one call site wires
+`hasValidationCriteria` to a real, already-available signal — stage 2's
+extracted build/test commands (`validationCommands`) — rather than leaving
+it hardcoded, so the fields can't drift back into being redundant by
+accident. `hasReconstructionArtifacts` stays hardcoded `false` at that call
+site, correctly: `.reconstruction/` is `pkr reconstruct`'s output, generated
+in a separate, later step this render call has no way to know about — so
+levels 4/5 remain **currently unreachable in practice** from `pkr export`/
+`pkr update` alone, same as before this fix. That's a real, known, and
+honestly-conservative limitation, not a bug — the bug was specifically that
+level 4 could never be an output even in principle (any caller supplying
+`hasReconstructionArtifacts: true` got 5, never 4). A future `pkr
+reconstruct` writing an achieved level back into the original PKR's manifest
+once its own artifacts exist would be the honest way to close the remaining
+gap — out of scope here, a distinct future task, not conflated with this
+fix. Regression-tested in `levels.test.ts` (level 4 reachable and distinct
+from 5; reverting the fix reproduces the exact 3→5 jump, confirmed by hand).
+
+## 19. Design: `pkr update --llm` reconciliation — superseding stale inferred knowledge
+
+Motivated directly by §16 Run 4: a real call correctly proposed the *new*
+facts (VIP threshold raised, referral bonus added) but left the *old*,
+now-wrong fact (`RULE-POINTS-002`, still claiming the old $500 threshold)
+sitting in the same rendered file with no relationship recorded — actively
+contradictory, not just stale-by-omission. Written as a design doc before any
+code, per the process this session has followed for every non-trivial change
+(design first, smallest useful slice, test before trusting).
+
+**✅ Implemented 2026-08-16, exactly as designed below** — every piece: the
+`<existing_knowledge>` prompt block, the optional `supersedes` response
+field (verified against what was actually shown, same discipline as Run 3's
+evidence-path fix), `update/reconcileInferredNodes.ts` (confirmed → 
+`conflicts_with`, non-confirmed → `supersedes`, reusing `mergeNodes.ts`'s
+protection pattern exactly), `render.ts` excluding non-confirmed superseded
+nodes from the main files into a new `superseded.md`, and the CLI's new `~
+superseded ...` / `!` conflict lines. 13 new tests across 4 files (all
+4 unit-test cases from the plan below, fake-LLM/no-API-cost, each verified
+by hand to actually regress when reverted — same discipline as every fix
+this session), plus the end-to-end case: the exact §16 Run 4 scenario
+(pre-existing stale $500 node, a fake LLM proposing the $1,000 correction
+with `supersedes` set) reproduced in `update/index.integration.test.ts` and
+confirmed fixed — the stale ID no longer appears in `business-rules.md`,
+appears in `superseded.md` instead, and the underlying node is still in the
+store (nothing deleted). Test plan item 5 (a real API call re-running this
+exact scenario) is **also done** — the spend cap lifted same-day. Real,
+independent `claude-sonnet-5` call, same synthetic repo rebuilt fresh, same
+VIP-threshold + referral-bonus change: it correctly proposed the new rules
+*and* correctly recognized `DOM-POINTS-003` ("VIP Account", explicitly
+stating the old $500 figure) as superseded by the new
+`RULE-POINTS-011` — the CLI printed the new `~ superseded ...` line for
+real, `DOM-POINTS-003` disappeared from `domain-model.md`, and appeared in
+`superseded.md` with its original $500 content intact plus the "superseded
+by" pointer. Notably, the model did **not** flag `RULE-POINTS-002` (a
+different existing node stating the multiplier-scope rule without the
+dollar figure) as superseded — correctly recognizing that rule's content
+is still accurate even though the threshold changed, exactly the
+"don't supersede just because a topic is related" restraint the system
+prompt asks for.
+
+**A second real, previously-undiscovered bug found by this same real call**
+(not the reconciliation feature's fault — this one predates it back to M1):
+`knowledge-map.json` rendered every edge as `{}` the moment this codebase
+ever produced a non-empty edge list to render, which had never happened in
+a real run before. Cause: `JSON.stringify(obj, Object.keys(obj).sort(), 2)`
+— the second argument is a property *allowlist* applied at every nesting
+level, not "sort these keys" (a natural-looking but wrong idiom). Top-level
+keys (node IDs) were in the allowlist; nested edge objects' own keys
+(`target`, `relationship_type`) weren't, so they were silently stripped.
+`source-map.json`'s identical-looking call never showed this because its
+values are arrays of plain strings — array elements aren't filtered by the
+allowlist, only object properties are. Fixed by sorting into a fresh object
+before stringifying and passing `null` as the replacer, applied to both call
+sites for consistency. Regression-tested in `render.test.ts` (reverting
+reproduces the exact `{}` shape found live) and reconfirmed against the
+real PKR after the fix — `knowledge-map.json` now contains the real
+`supersedes` edge.
+
+**A third bug, found by asking "does this fix actually reach the surfaces
+that matter?" rather than by running anything new:** `render.ts`'s
+superseded-node exclusion only ever applied to the main `.projectknowledge/
+*.md` files. `pkr context` (the file an agent actually reads) and `pkr
+reconstruct` are two *separate* render paths over the same node/edge graph —
+neither had been touched, and `context/render.ts` didn't even have an
+`edges` parameter to filter with. The exact Run 4 contradiction (stale $500
+fact next to the correct $1,000 one) was still fully reproducible through
+either command after the "fix" shipped. Caught by re-examining the fix's
+actual reach immediately after landing it, not by a new test failing on its
+own — worth noting as a gap in how this was verified the first time, not
+just a gap in the code.
+
+Fixed properly this time: pulled the exclusion logic into a new shared
+module, `supersede.ts` (`computeSupersededIds(nodes, edges)`), used by all
+three render paths now instead of a copy living only in `render.ts`. `pkr
+context` omits a superseded node outright (no dedicated section — it's a
+single-purpose continuation aid, not the permanent record); `pkr reconstruct`
+does the same (a build spec has no use for a fact already known wrong).
+Regression-tested in both (`context/index.test.ts`, new
+`reconstruct/index.test.ts`) — each reverts to reproduce the literal $500-
+next-to-$1,000 contradiction, confirming the tests actually catch what they
+claim to. **Lesson for next time a cross-cutting fix like this lands:** grep
+for every place a `KnowledgeNode[]` gets rendered before calling a fix like
+this done, not just the one place a bug report pointed at.
+
+### Why reconciliation is harder than the deterministic case
+
+`mergeNodes.ts` already solves this problem for deterministic facts, cleanly:
+a *natural key* (`update/naturalKey.ts` — package name, directory path, route
+signature) lets a fresh extraction pass recognize "this is the same fact as
+before" even though IDs are allocator-assigned, not content-derived. That
+doesn't exist for inferred facts and can't be built the same way — `naturalKey()`
+works because deterministic titles are mechanically derived from stable
+source (a `package.json` key, a route path). An LLM's title for the same
+underlying rule can legitimately vary call to call ("VIP 2x multiplier
+applies only to purchase-earned points" vs. a paraphrase), and — as Run 4
+showed — the model itself may *split* one old fact into two new ones (a
+restated rule + a separate "what changed" node). No deterministic string-
+matching heuristic reliably catches that; matching this requires the same
+kind of judgment that produced the facts in the first place.
+
+### Chosen approach: let the model self-report supersession, from context it's actually shown
+
+Rather than inventing a new similarity-matching mechanism, feed the model
+the *existing* inferred knowledge as a third context block (alongside the
+current `<observed_facts>` and `<repository_excerpts>`) on `pkr update --llm`
+runs only — there's nothing to reconcile against on a first `pkr export`, so
+this block is empty/omitted there:
+
+```
+<existing_knowledge>
+[RULE-POINTS-002] (business-rule) VIP 2x multiplier applies only to purchase-earned points
+  Accounts with lifetimeSpendCents >= $500 get a 2x multiplier...
+...
+</existing_knowledge>
+```
+
+Capped the same way `summarizeObservedFacts()` already caps observed facts
+(`MAX_OBSERVED_SUMMARY_ITEMS`) — a new `MAX_EXISTING_KNOWLEDGE_ITEMS`
+constant, same spirit, same file. Content is truncated per item (not just
+title) — the model needs enough of the old claim to judge contradiction, not
+just a label to string-match against.
+
+The response schema gains exactly one new optional field per proposed node:
+
+```jsonc
+{ "type": "...", "title": "...", "content": "...", "confidence": 0.0,
+  "domain": "...", "evidence": [...],
+  "supersedes": ["RULE-POINTS-002"] }  // NEW, optional, IDs from <existing_knowledge> only
+```
+
+Rejected alternative: restructure the response into explicit actions
+(`{"action": "new"|"update"|"retire", ...}`, considered as "Option A/full
+reconciliation" during design). Rejected because it's a much bigger prompt/
+schema/validation surface for the same outcome the additive `supersedes`
+field already gets, and every other stage-6 change this session has been
+a minimal, additive schema field (`weaklyGrounded`'s tiering added zero new
+required fields) — consistency with that pattern was weighed deliberately,
+not just chosen for less code.
+
+### Validation (same evidence-grounding discipline as everything else in synthesize.ts)
+
+A claimed `supersedes` ID is only honored if:
+1. It's an ID actually present in the `<existing_knowledge>` block shown
+   this call (mirrors the Run 3 evidence-path fix exactly — a claim about
+   something never shown is rejected, not trusted because it happens to be
+   a real ID).
+2. It resolves to a node of an LLM-synthesizable type (`SYNTHESIZABLE_TYPES`)
+   — attempting to supersede a *deterministic* node is out of scope and
+   rejected; that's `mergeNodes.ts`'s job, by natural key, not this path's.
+
+An invalid `supersedes` entry is dropped silently from that one node (logged
+as a lower-severity note, not a full node rejection like `skipped` — the new
+node's own evidence can still be perfectly valid even if one supersede claim
+in it wasn't shown).
+
+### Reconciliation logic — reuses the confirmed-protection pattern verbatim, doesn't reinvent it
+
+New module, `update/reconcileInferredNodes.ts`, structurally mirroring
+`mergeDeterministicNodes()`'s shape (`NodeMergeReport` → a parallel
+`InferredReconcileReport`). For each accepted new node with verified
+`supersedes` targets, split by the target's current status:
+
+- **Target is `confirmed`:** never touched or hidden — same rule as
+  `FileNodeStore.upsertNode`'s existing check, applied here explicitly
+  rather than relying on ID collision to trigger it (new inferred nodes get
+  fresh IDs, so they'd never hit that check by accident the way a
+  deterministic merge does). Create a `conflicts_with` edge
+  (new → target, the same `RelationshipType` `mergeNodes.ts` already uses),
+  report it exactly like a deterministic conflict (reuses the CLI's existing
+  `!` line format). A human resolves it; nothing is decided silently.
+- **Target is not confirmed:** create a `supersedes` edge (new → target —
+  this `RelationshipType` has existed in `types.ts` since M1 and has never
+  been emitted by any code path until this) and set the new node's own
+  `supersedes` field (also in the schema since M1, same story) to the first
+  target ID. Target node is **not deleted** — see rendering, below.
+
+No automatic retraction happens without a positive `supersedes` claim from
+the model in that same call. A rule that silently stops being reproduced
+(no new node references it at all) is left exactly as-is. This is a
+deliberate extension of `mergeNodes.ts`'s own stated principle ("traded
+deliberately for the much safer failure mode... duplication you can spot and
+merge by hand, vs. silent loss") to the inferred side: no positive evidence
+of staleness means no action, even though that means Run-4-style
+contradictions can still occur if the model doesn't notice/report the
+relationship. Reconciliation quality is bounded by what the model reports,
+same as synthesis quality already is — not a new kind of risk, the same one.
+
+### Rendering — where this actually fixes the Run 4 symptom
+
+The bug a human would actually see was the contradiction sitting in
+`business-rules.md`. Fixing the data model without changing `render.ts`
+would leave that visible. Superseded-but-not-confirmed nodes are excluded
+from the normal per-type files (`renderProjectKnowledge`'s existing `byFile`
+grouping, one added filter: skip a node if it's the target of a `supersedes`
+edge and its own status isn't `confirmed`) — and instead written to one new
+consolidated file, `superseded.md` at the PKR root, grouped by original
+section, each entry showing the old content plus "→ superseded by
+`<title>` `<new-id>`".
+
+Rejected alternative: omit superseded nodes from rendered output entirely
+(only keep them in `.knowledge/*.jsonl`). Rejected because it breaks
+PKR_SPEC.md §8's portability guarantee — a PKR handed around as plain
+Markdown (no `.knowledge/` store) would silently lose this history, which is
+exactly the kind of audit trail (PKR_SPEC.md §4.2's whole reason for
+`conflicts_with` existing) this project has consistently chosen not to
+discard elsewhere.
+
+### CLI output
+
+`pkr update --llm`'s diff report gains one new line kind alongside the
+existing `+`/`~`/`!`:
+
+```
+  ~ superseded RULE-POINTS-002 "VIP 2x multiplier applies only to purchase-earned points"
+      → replaced by RULE-POINTS-010 "VIP 2x multiplier applies only to purchase-earned points"
+```
+
+Confirmed-target conflicts print with the *same* wording already used for
+deterministic conflicts (`"... is confirmed but extraction now disagrees —
+needs manual review"`) — one mental model for "something needs your review,"
+regardless of which layer produced it.
+
+### Testing plan (before this ships, same discipline as every fix this session)
+
+All with a fake `LlmClient` (free, fast) except the last:
+1. Non-confirmed target → `supersedes` edge created, new node's
+   `supersedes` field set, target excluded from its normal section file,
+   present in `superseded.md`.
+2. Confirmed target → `conflicts_with` edge created, target **unchanged**
+   and still rendered normally (byte-for-byte, same assertion style as the
+   existing `mergeNodes.test.ts` confirmed-protection regression test).
+3. A `supersedes` ID not present in `<existing_knowledge>` this call →
+   dropped, rest of that node's evidence/content unaffected, no crash.
+4. No `supersedes` field on any proposed node → current additive-only
+   behavior exactly preserved (regression guard for the 73 existing tests —
+   this must stay backward compatible, the field is optional).
+5. **Real-call regression, once the account's spend cap allows it:** rebuild
+   the exact §16 Run 4 fixture and re-run `pkr update --llm` — confirm
+   `RULE-POINTS-002` no longer appears in the rendered `business-rules.md`
+   and does appear in `superseded.md`, superseded by the correct new node.
+   This is the actual bug that motivated the design; a unit test proves the
+   mechanism works, only a real call proves the *model* reliably uses it.
+
+### Open judgment call, flagged for pushback
+
+Keeping superseded nodes in a dedicated `superseded.md` (vs. deleting them
+outright) is the one real product choice in this design, not just an
+implementation detail — I defaulted to "keep, don't delete" because it's
+consistent with every other retention choice already in this codebase
+(`historical-lost` status, `conflicts_with` over silent overwrite, portable
+`.knowledge/*.jsonl`), but it's the one place someone could reasonably want
+the opposite (a leaner PKR, no history file) and I haven't validated that
+preference either way.
