@@ -14,6 +14,7 @@ import { runUpdate } from "./index.js";
 import { FileNodeStore } from "../store/fileNodeStore.js";
 import { IdAllocator } from "../ids.js";
 import { makeInferredNode } from "../node-factory.js";
+import { listVersions } from "../versions.js";
 import type { LlmClient } from "../llm/client.js";
 
 function tmpRepo(): string {
@@ -96,6 +97,45 @@ describe("export -> update integration", () => {
     const confirmedAfter = storeAfter.getNode(zod.id)!;
     expect(confirmedAfter.status).toBe("confirmed");
     expect(confirmedAfter.title).toBe("zod (^3.23.8)"); // original value survives, untouched
+  });
+});
+
+describe("Knowledge Versioning end-to-end (ARCHITECTURE.md §24)", () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = tmpRepo();
+    await runExport({ repoRoot: repo, llm: null });
+  });
+
+  it("pkr export commits v0.1 with every node listed as added", () => {
+    const versions = listVersions(knowledgeDirOf(repo));
+    expect(versions).toHaveLength(1);
+    expect(versions[0].version).toBe("v0.1");
+    expect(versions[0].parent_version).toBeNull();
+    expect(versions[0].changed_nodes.every((c) => c.change === "added")).toBe(true);
+  });
+
+  it("a no-op pkr update commits no new version", async () => {
+    const result = await runUpdate({ repoRoot: repo, llm: null });
+    expect(result.upToDate).toBe(true);
+    expect(result.knowledgeVersion).toBeNull();
+    expect(listVersions(knowledgeDirOf(repo))).toHaveLength(1); // still just v0.1
+  });
+
+  it("a real change commits v0.2, chained to v0.1, and the manifest reflects it", async () => {
+    writePackageJson(repo, { zod: "^3.24.0", "left-pad": "^1.0.0" });
+    const result = await runUpdate({ repoRoot: repo, llm: null });
+
+    expect(result.knowledgeVersion).toBe("v0.2");
+    const versions = listVersions(knowledgeDirOf(repo));
+    expect(versions.map((v) => v.version)).toEqual(["v0.1", "v0.2"]);
+    expect(versions[1].parent_version).toBe("v0.1");
+    expect(versions[1].changed_nodes.some((c) => c.change === "added")).toBe(true);
+    expect(versions[1].changed_nodes.some((c) => c.change === "modified")).toBe(true);
+
+    const manifest = fs.readFileSync(path.join(repo, ".projectknowledge", "manifest.yaml"), "utf8");
+    expect(manifest).toContain("knowledge_version: v0.2");
   });
 });
 

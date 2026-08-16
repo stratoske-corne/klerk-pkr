@@ -86,6 +86,9 @@ The `.projectknowledge/` format must remain, permanently:
   .knowledge/                    # internal, not for hand editing — see §8
     nodes.jsonl
     edges.jsonl
+    versions/                    # Knowledge Versions — see §7
+      v0.1.yaml
+      v0.2.yaml
 ```
 
 **Rule: only generate files that have content.** An empty `events.md` for a project
@@ -339,6 +342,17 @@ that becomes immutable only when committed (`pkr commit` or the equivalent web
 action) — mirroring the "review before commit" step in the product workflow
 (`PRODUCT_SPEC.md` §4). Draft state is where human review of `inferred`/`unknown`
 nodes happens.
+
+**Implementation note (2026-08-16, ARCHITECTURE.md §24):** the CLI ships an
+*auto-commit* slice of this today, not yet the draft step above. Every `pkr export`
+and every `pkr update` that produces at least one real fact-level change commits a
+version immediately — `author` is always `extractor:pkr-cli@0.1.0` (there's no
+`pkr confirm`/`pkr edit` yet to attribute a version to a human), and `reason` is
+omitted rather than fabricated. `pkr log` reads the committed history. The
+draft-vs-committed distinction above — where a human reviews before a version
+becomes real — is still the target shape; it's deliberately not built yet because it
+requires a new state machine in front of `pkr update`'s already-validated
+direct-apply behavior, not just a rendering change.
 
 ## 8. Internal structured store vs. portable export
 

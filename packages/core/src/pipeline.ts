@@ -27,6 +27,7 @@ import { analyzeStructure } from "./extract/structure.js";
 import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./extract/interfaces.js";
 import { synthesizeProductAndBehavior, type SkippedSynthesisNode, type WeaklyGroundedNode } from "./extract/synthesize.js";
 import { renderProjectKnowledge } from "./render/render.js";
+import { commitVersion, summarizeChanges, type ChangedNode } from "./versions.js";
 import type { LlmClient } from "./llm/client.js";
 
 export interface ExportOptions {
@@ -55,6 +56,8 @@ export interface ExportResult {
   achievedLevel: number;
   totalRedactions: number;
   synthesis: SynthesisReport | null;
+  /** ARCHITECTURE.md §24 — always "v0.1" on a fresh export, since it's always a clean rebuild. Null only if the store somehow ended up with zero nodes. */
+  knowledgeVersion: string | null;
 }
 
 function detectGitCommit(repoRoot: string): string | null {
@@ -140,15 +143,27 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
   allocator.save();
   store.save();
 
+  // Knowledge Versioning (PKR_SPEC.md §7 / ARCHITECTURE.md §24 — auto-commit
+  // MVP). `pkr export` always wipes and rebuilds from scratch (module doc
+  // above), so every node it produces is genuinely new for this PKR's
+  // history: v0.1, unconditionally, no parent.
+  const sourceCommit = detectGitCommit(repoRoot);
+  const changedNodes: ChangedNode[] = store.listNodes().map((n) => ({ id: n.id, change: "added" as const }));
+  const knowledgeVersion = commitVersion(knowledgeDir, {
+    summary: `Initial export: ${summarizeChanges(changedNodes)}`,
+    changedNodes,
+    sourceCommit,
+  });
+
   const renderResult = renderProjectKnowledge({
     outDir,
     projectName,
     projectDescription: depResult.projectDescription,
     nodes: store.listNodes(),
     edges: store.listEdges(),
-    sourceCommit: detectGitCommit(repoRoot),
+    sourceCommit,
     generatorVersion: GENERATOR_VERSION,
-    knowledgeVersion: "v0.1",
+    knowledgeVersion: knowledgeVersion ?? "v0.1", // null only if the store somehow has zero nodes
     validationCommands: Object.keys(depResult.validationCommands).length > 0 ? depResult.validationCommands : undefined,
   });
 
@@ -160,5 +175,6 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
     achievedLevel: renderResult.achievedLevel,
     totalRedactions: renderResult.totalRedactions,
     synthesis,
+    knowledgeVersion,
   };
 }

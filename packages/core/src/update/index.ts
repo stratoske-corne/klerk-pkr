@@ -43,6 +43,7 @@ import { renderProjectKnowledge } from "../render/render.js";
 import { diffInventory, hasChanges, type InventoryDiff } from "./diffInventory.js";
 import { mergeDeterministicNodes, type NodeMergeReport } from "./mergeNodes.js";
 import { reconcileInferredNodes, type InferredReconcileReport } from "./reconcileInferredNodes.js";
+import { commitVersion, listVersions, summarizeChanges, type ChangedNode } from "../versions.js";
 import type { LlmClient } from "../llm/client.js";
 import type { KnowledgeNode } from "../types.js";
 
@@ -73,6 +74,8 @@ export interface UpdateResult {
   llm: LlmUpdateReport | null;
   achievedLevel: number | null;
   writtenFiles: string[];
+  /** ARCHITECTURE.md §24 — the new Knowledge Version this update committed, or null if nothing changed at the fact level (no version without a real change, even if `upToDate` was false because files moved). */
+  knowledgeVersion: string | null;
 }
 
 const GENERATOR_VERSION = "pkr-cli@0.1.0";
@@ -114,6 +117,7 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
       llm: null,
       achievedLevel: null,
       writtenFiles: [],
+      knowledgeVersion: null,
     };
   }
 
@@ -197,6 +201,33 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
     saveInventory(knowledgeDir, freshInventory);
   }
 
+  // Knowledge Versioning (PKR_SPEC.md §7 / ARCHITECTURE.md §24 — auto-commit
+  // MVP). Only counts what was *actually* applied to the store this run:
+  // deterministic merge results always (they're saved unconditionally
+  // above), stage 6 results only if it ran and succeeded — a failed LLM
+  // call already contributed nothing to the store (see the try/catch above).
+  const changedNodes: ChangedNode[] = [
+    ...nodeMerge.added.map((n): ChangedNode => ({ id: n.id, change: "added" })),
+    ...nodeMerge.modified.map(({ after }): ChangedNode => ({ id: after.id, change: "modified" })),
+    ...nodeMerge.removed.map((n): ChangedNode => ({ id: n.id, change: "removed" })),
+    ...nodeMerge.conflicts.map(({ candidate }): ChangedNode => ({ id: candidate.id, change: "conflict" })),
+  ];
+  if (llmReport?.ranSuccessfully) {
+    changedNodes.push(...llmReport.added.map((n): ChangedNode => ({ id: n.id, change: "added" })));
+    changedNodes.push(...llmReport.superseded.map(({ target }): ChangedNode => ({ id: target.id, change: "superseded" })));
+    changedNodes.push(...llmReport.conflicts.map(({ target }): ChangedNode => ({ id: target.id, change: "conflict" })));
+  }
+  const sourceCommit = detectGitCommit(repoRoot);
+  const committedVersion = commitVersion(knowledgeDir, {
+    summary: `pkr update: ${summarizeChanges(changedNodes)}`,
+    changedNodes,
+    sourceCommit,
+  });
+  // No new version when nothing actually changed at the fact level (e.g. a
+  // comment-only edit) — the manifest still needs *a* version string, so
+  // fall back to whatever's already latest rather than regressing to v0.1.
+  const knowledgeVersion = committedVersion ?? listVersions(knowledgeDir).at(-1)?.version ?? "v0.1";
+
   const projectName = depResult.projectName ?? projectId;
   const renderResult = renderProjectKnowledge({
     outDir,
@@ -204,9 +235,9 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
     projectDescription: depResult.projectDescription,
     nodes: store.listNodes(),
     edges: store.listEdges(),
-    sourceCommit: detectGitCommit(repoRoot),
+    sourceCommit,
     generatorVersion: GENERATOR_VERSION,
-    knowledgeVersion: "v0.1", // real Knowledge Versioning (PKR_SPEC.md §7) isn't built yet — see ARCHITECTURE.md §0
+    knowledgeVersion,
     validationCommands: Object.keys(depResult.validationCommands).length > 0 ? depResult.validationCommands : undefined,
   });
 
@@ -216,6 +247,7 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
     fileDiff,
     nodeMerge,
     llm: llmReport,
+    knowledgeVersion: committedVersion,
     achievedLevel: renderResult.achievedLevel,
     writtenFiles: renderResult.writtenFiles,
   };

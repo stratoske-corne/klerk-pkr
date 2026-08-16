@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import * as path from "node:path";
-import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, type ContextTarget, type KnowledgeNode } from "@klerk/core";
+import * as fs from "node:fs";
+import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, type ContextTarget, type KnowledgeNode } from "@klerk/core";
 
 const program = new Command();
 
@@ -56,6 +57,7 @@ program
     console.log(`✓ Wrote ${result.writtenFiles.length} file(s) to ${path.relative(process.cwd(), result.outDir)}/`);
     console.log(`  Nodes: ${result.nodeCount}   Edges: ${result.edgeCount}`);
     console.log(`  Achieved reconstruction level: ${result.achievedLevel} (see PKR_SPEC.md §3)`);
+    console.log(`  Knowledge version: ${result.knowledgeVersion ?? "(none — no nodes)"} (see \`pkr log\`)`);
     if (result.totalRedactions > 0) {
       console.log(`  ⚠ ${result.totalRedactions} likely secret value(s) were redacted before export.`);
     }
@@ -222,6 +224,36 @@ program
     console.log("");
     console.log(`✓ Wrote ${result.writtenFiles.length} file(s) to ${path.relative(process.cwd(), result.outDir)}/`);
     console.log(`  Achieved reconstruction level: ${result.achievedLevel} (see PKR_SPEC.md §3)`);
+    console.log(
+      result.knowledgeVersion
+        ? `  Committed knowledge version: ${result.knowledgeVersion} (see \`pkr log\`)`
+        : "  No new knowledge version committed (the changed files didn't affect any extracted fact).",
+    );
+  });
+
+program
+  .command("log")
+  .description("Show the Knowledge Version history for a .projectknowledge/ directory (ARCHITECTURE.md §24 — every `pkr export`/`pkr update` that changed a fact commits one).")
+  .argument("<pkr-dir>", "path to a .projectknowledge/ directory")
+  .action((pkrDir: string) => {
+    const resolvedPkrDir = path.resolve(process.cwd(), pkrDir);
+    if (!fs.existsSync(path.join(resolvedPkrDir, "manifest.yaml"))) {
+      throw new Error(`Not a Project Knowledge Repository (no manifest.yaml found at ${resolvedPkrDir})`);
+    }
+
+    const versions = listVersions(path.join(resolvedPkrDir, ".knowledge"));
+    if (versions.length === 0) {
+      console.log("No knowledge versions committed yet (this PKR predates Knowledge Versioning, or nothing has changed since).");
+      return;
+    }
+
+    for (const v of [...versions].reverse()) {
+      console.log(`${v.version}  ${v.created_at}  ${v.author}`);
+      console.log(`  ${v.summary}`);
+      if (v.source_commit) console.log(`  source commit: ${v.source_commit}`);
+      console.log(`  parent: ${v.parent_version ?? "(none — initial version)"}`);
+      console.log("");
+    }
   });
 
 // Every command action above can throw a plain `Error` from core (bad path,

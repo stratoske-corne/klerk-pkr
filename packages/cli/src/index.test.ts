@@ -103,6 +103,14 @@ describe("pkr CLI — clean error messages, not raw crashes (REGRESSION)", () =>
     expect(stdout + stderr).not.toMatch(/at \S+ \(/);
   });
 
+  it("log on a directory with no manifest.yaml: clean message, exit 1, no stack trace", () => {
+    const dir = fixtureRepo();
+    const { stdout, stderr, status } = runCli(["log", dir]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("Not a Project Knowledge Repository");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+
   it("PKR_DEBUG=1 opts back into seeing the full stack trace", () => {
     const { stdout, stderr } = runCli(["export", "/this/path/does/not/exist"], { PKR_DEBUG: "1" });
     expect(stdout + stderr).toMatch(/at \S+ \(/);
@@ -177,5 +185,49 @@ describe("pkr CLI — `update`'s modified-node line (REGRESSION, ARCHITECTURE.md
     const { stdout, status } = runCli(["update", dir]);
     expect(status).toBe(0);
     expect(stdout).toContain("express (^4.18.0) → express (^4.19.0)");
+  });
+});
+
+describe("pkr CLI — Knowledge Versioning (ARCHITECTURE.md §24)", () => {
+  it("export commits v0.1 and reports it; `pkr log` then shows it, newest first", () => {
+    const dir = fixtureRepo();
+    const exportOut = runCli(["export", dir]);
+    expect(exportOut.status).toBe(0);
+    expect(exportOut.stdout).toContain("Knowledge version: v0.1");
+
+    const logOut = runCli(["log", path.join(dir, ".projectknowledge")]);
+    expect(logOut.status).toBe(0);
+    expect(logOut.stdout).toContain("v0.1");
+    expect(logOut.stdout).toContain("extractor:pkr-cli@0.1.0");
+    expect(logOut.stdout).toContain("(none — initial version)");
+  });
+
+  it("a real update bumps to v0.2 and `pkr log` shows both, newest first", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+    const updateOut = runCli(["update", dir]);
+    expect(updateOut.status).toBe(0);
+    expect(updateOut.stdout).toContain("Committed knowledge version: v0.2");
+
+    const logOut = runCli(["log", path.join(dir, ".projectknowledge")]);
+    const v2Index = logOut.stdout.indexOf("v0.2");
+    const v1Index = logOut.stdout.indexOf("v0.1");
+    expect(v2Index).toBeGreaterThanOrEqual(0);
+    expect(v1Index).toBeGreaterThan(v2Index); // newest first
+  });
+
+  it("a no-op update reports no new version, and `pkr log` still shows only v0.1", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    const updateOut = runCli(["update", dir]);
+    expect(updateOut.status).toBe(0);
+    expect(updateOut.stdout).toContain("Up to date");
+
+    const logOut = runCli(["log", path.join(dir, ".projectknowledge")]);
+    expect(logOut.stdout).toContain("v0.1");
+    expect(logOut.stdout).not.toContain("v0.2");
   });
 });

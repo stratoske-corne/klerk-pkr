@@ -4,6 +4,7 @@ export * from "./node-factory.js";
 export * from "./secrets.js";
 export * from "./levels.js";
 export * from "./supersede.js";
+export * from "./versions.js";
 export * from "./store/fileNodeStore.js";
 export * from "./extract/inventory.js";
 export * from "./extract/dependencies.js";
