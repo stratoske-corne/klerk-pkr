@@ -36,7 +36,11 @@ dependency detection + Express routes, and (live, real API key, user-supplied)
 two full M3 loop runs (export → reconstruction → blind agent): a real external
 repo (Run 1, contamination-limited) and a synthetic fixture built specifically
 to test whether a deliberately asymmetric business rule survives reconstruction
-(Run 2 — it did).
+(Run 2 — it did). See §30 for a full-cycle validation of the entire §24-29
+surface together (Versioning, diff, compare, confirm/edit, event detection,
+stage 5, architecture-overview) against a real, large, unfamiliar repo
+(`thisisdkyadav/hostel-management-system-backend`, 533 source files, 677
+nodes, 5 real chained Knowledge Versions) — clean, zero new bugs found.
 
 ## 1. System components
 
@@ -1859,3 +1863,63 @@ any other type. 1 render-level test (`render.test.ts`) confirming the type
 lands in `architecture/overview.md`.
 
 `packages/core`: 180 tests / 22 files. Both packages: **211 tests**.
+
+## 30. M8 — full-cycle real-world validation of the combined §24-29 surface (2026-08-16)
+
+Every feature added this session (Knowledge Versioning, `pkr diff`,
+`pkr compare`, `pkr confirm`/`pkr edit`, event detection, stage 5,
+architecture-overview) had been validated individually. None had been run
+together, end-to-end, against a real, large, unfamiliar, unscripted repo —
+exactly the condition that found a real bug in every prior round of this
+kind of testing (§16 M3, §20 M6, §21 M7). Chose
+`thisisdkyadav/hostel-management-system-backend` (2 stars, not a fork, 568
+commits, vetted via the GitHub API before cloning — same discipline as
+M6/M7): a genuinely large modular-monolith Express/Mongoose backend (533
+source files), unrelated in domain and structure to every fixture used
+earlier this session.
+
+**Full sequence run, two real API calls:** `pkr export --llm` at an early
+commit (655 nodes, 13 inferred, 38s) → `pkr confirm` one node → `pkr edit`
+another (deliberately diverging its content from ground truth, to set up a
+real protection test) → checked out 32 real changed files forward →
+`pkr update` (deterministic-only, correctly produced `+9 ~115 -1
+1 conflict`) → checked out another 18 real changed files forward →
+`pkr update --llm` (10 new inferred nodes, 27s, real business-rule
+detail — e.g. "Guest occupancy computed temporally, never from
+Room.occupancy") → `pkr log` (5 real chained versions, correct
+human/extractor authorship) → `pkr diff v0.1 v0.5` (correct aggregate:
+`+22 ~145 -2, 2 conflicts, 2 confirmed`) → `pkr reconstruct` (677 nodes,
+no crash) → `pkr compare` against itself, both without and with
+`--run-build` (547/547 endpoints, 78/78 tables, and a real `npm run test`
+placeholder script — `exit 1` — correctly executed and reported as a real
+failure with real captured output).
+
+**One thing that looked like a bug and wasn't** — investigated properly
+before concluding either way, not assumed: `pkr update` flagged the
+earlier-edited node as `! "DELETE /" is confirmed but extraction now
+disagrees`, on a file that hadn't even changed between commits. Traced it
+by hand: re-running `analyzeApiEndpoints` directly against the current
+checkout reproduced byte-identical title/content/evidence to what fresh
+extraction would naturally give — the mismatch was entirely because the
+earlier `pkr edit` step had deliberately set this node's content to
+"Human-reviewed and corrected note for this fact.", diverging it from
+ground truth on purpose as part of this same test. The conflict was
+correct, not a bug — confirmed-node protection working exactly as
+specified (PKR_SPEC.md §4.2) against a real, human-diverged fact at real
+scale, persisting across two further update runs until a human resolves
+it, exactly as designed. Recorded here because concluding "not a bug"
+without tracing it first would have been exactly the kind of unverified
+claim this project's own discipline exists to avoid.
+
+**Zero new bugs found this round** — a genuinely clean result, not
+"nothing happened": no crashes at 677 nodes / 547 endpoints, zero secret
+leakage from a real 66-variable `.env` surface, correct absence of
+event/CI/test nodes where the repo genuinely had none of those things
+(not false negatives — independently verified each absence against the
+real repo, same as the M6/M7 discipline), and `pkr compare`'s
+`--run-build` path correctly executing and reporting a real failing
+script it had never seen before. Read as evidence the individually-shipped
+§24-29 features compose correctly under real conditions, not as proof
+nothing is left to find — the session's own pattern (§21's own text) is
+that composition bugs specifically tend to hide until features are run
+together, so this is one clean data point, not a closed question.
