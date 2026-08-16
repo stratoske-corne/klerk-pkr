@@ -145,4 +145,28 @@ describe("FileNodeStore", () => {
     store.deleteNode(node.id);
     expect(store.getNode(node.id)).toBeUndefined();
   });
+
+  // SECURITY REGRESSION (ARCHITECTURE.md §31): PKR_SPEC.md §10 says a
+  // secret must never be written into "any generated file" — the internal
+  // .knowledge/nodes.jsonl is one, but the write-gate had only ever been
+  // wired into render.ts's Markdown output. Confirmed with a real
+  // AWS-shaped key before this fix: `pkr edit`'s human-typed content
+  // reached disk in this file completely unredacted.
+  it("SECURITY: redacts a secret-shaped value from node content before it reaches nodes.jsonl on disk", () => {
+    const store = FileNodeStore.load(dir);
+    const node = makeNode(allocator, "proj", "AUTH", {
+      type: "component",
+      title: "Auth",
+      content: "See AKIAIOSFODNN7EXAMPLE for the AWS key we use.",
+      status: "observed",
+      confidence: null,
+      evidence: [{ path: "a.ts" }],
+    });
+    store.upsertNode(node);
+    store.save();
+
+    const onDisk = fs.readFileSync(path.join(dir, "nodes.jsonl"), "utf8");
+    expect(onDisk).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(onDisk).toContain("[REDACTED:AWS access key]");
+  });
 });

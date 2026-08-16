@@ -44,6 +44,8 @@ export interface SynthesisReport {
   nodeCount: number;
   skipped: SkippedSynthesisNode[];
   excerptFiles: string[];
+  /** Secret-shaped values redacted from excerpt content before it left this machine as part of the LLM API call — see synthesize.ts's SynthesisResult doc. */
+  excerptRedactions: number;
   /** Accepted nodes whose evidence never included a file the model actually read (excerpt content) — see extract/synthesize.ts's WeaklyGroundedNode doc. */
   weaklyGrounded: WeaklyGroundedNode[];
   error?: string;
@@ -137,6 +139,7 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
         nodeCount: result.nodes.length,
         skipped: result.skipped,
         excerptFiles: result.excerptFiles,
+        excerptRedactions: result.excerptRedactions,
         weaklyGrounded: result.weaklyGrounded,
       };
     } catch (err) {
@@ -145,6 +148,7 @@ export async function runExport(options: ExportOptions): Promise<ExportResult> {
         nodeCount: 0,
         skipped: [],
         excerptFiles: [],
+        excerptRedactions: 0,
         weaklyGrounded: [],
         error: (err as Error).message,
       };

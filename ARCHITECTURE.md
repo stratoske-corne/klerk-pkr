@@ -1923,3 +1923,119 @@ script it had never seen before. Read as evidence the individually-shipped
 nothing is left to find — the session's own pattern (§21's own text) is
 that composition bugs specifically tend to hide until features are run
 together, so this is one clean data point, not a closed question.
+
+## 31. Deliberate hard security + performance review (2026-08-16)
+
+Requested explicitly, not tied to a specific bug report — an adversarial
+read of the newest code (§24-30) plus real, empirical stress tests, not
+just theorizing. Found and fixed three real issues, two of them
+security-critical; verified several other suspected weak points and found
+them sound.
+
+### Found and fixed: `.knowledge/nodes.jsonl` never redacted (severity: high)
+
+`PKR_SPEC.md` §10 states the rule plainly: "the exporter must never write a
+literal secret value into any generated file." The secret write-gate
+(`secrets.ts`) had only ever been wired into `render.ts` — the Markdown
+output — never into `FileNodeStore.save()`, which writes the *internal*
+store, itself a generated file inside `.projectknowledge/`. Confirmed with
+a real AWS-shaped key, not hypothesized: `pkr edit --content` (the one code
+path this session added that puts genuinely arbitrary human-typed text
+into a node with no prior extraction/synthesis step in front of it) wrote
+the raw secret to `nodes.jsonl` in plaintext while the rendered `.md`
+correctly showed `[REDACTED:...]` — the two representations of the same
+fact silently disagreed on the one guarantee that's supposed to hold
+everywhere. Fixed in `FileNodeStore.save()`: redacts title/content on the
+way to disk only (not the in-memory node, mirroring `render.ts`'s own
+approach) — a single chokepoint covering every code path that calls
+`store.save()` (export, update, confirm, edit), rather than remembering to
+add it at each one individually. 1 regression test
+(`fileNodeStore.test.ts`); verified by hand — reverting reproduces the
+exact real AWS-key leak, fails only that test.
+
+### Found and fixed: excerpt content sent to the LLM API was never redacted (severity: high — the more serious of the two)
+
+A distinct, more serious version of the same gap: `buildExcerpts()`
+(`synthesize.ts`) reads candidate files (README, entry points, the largest
+source file, files a `pkr update` diff knows changed) and sends their raw
+content directly to Anthropic's API as part of the stage-6 prompt — with
+no redaction at all, ever, on any code path. Confirmed with a real,
+adversarial reproduction: a fixture with an AWS-shaped key embedded in its
+entry point, captured via a mock `LlmClient`, showed the literal key
+present in the exact string that would be sent as the API request body.
+This is data leaving the machine to a third party, not just an
+at-rest-on-disk concern — the more severe of this review's two findings.
+Root cause: the secret write-gate was designed around "content written to
+`.projectknowledge/`" and a prompt sent to an LLM is a genuinely different
+kind of destination the original design never had in view. Fixed at the
+single point every excerpt's content passes through regardless of which
+selection rule picked it (`buildExcerpts()`'s final assembly loop) —
+`redactSecrets()` applied before the content is added to the returned
+excerpt list. New `excerptRedactions` count threaded through
+`SynthesisResult` → `SynthesisReport`/`LlmUpdateReport` → CLI output for
+both `pkr export` and `pkr update --llm`, mirroring the existing
+`totalRedactions` pattern for render-time redactions (kept as a *separate*
+count — conflating "redacted before being sent to Anthropic" with
+"redacted before being written to your local files" would blur an
+important distinction). 2 regression tests (`synthesize.test.ts`);
+verified by hand — reverting reproduces the exact real leak from the
+adversarial reproduction above.
+
+### Found and fixed: O(n²) node matching in `pkr update` (severity: real but lower — scale-dependent, not exploitable)
+
+`mergeDeterministicNodes` (`update/mergeNodes.ts`) matched each freshly
+re-extracted candidate against the existing node set via
+`oldNodes.find(...)` — a linear scan repeated for every candidate, O(n×m)
+overall. Measured, not assumed: a standalone 10,000-node benchmark showed
+10x the nodes costing ~70x the time, not 10x. At the scale this session's
+own real-repo validation ran (§30, 547 endpoints), the cost was
+sub-millisecond and invisible; the growth curve is the actual problem for
+a project that scales further. Fixed by indexing existing nodes into a
+`Map<naturalKey, node>` once per type (O(n)) instead of scanning per
+candidate — first-match-wins per key, exactly preserving `.find()`'s old
+behavior on `store.listNodes()`'s ID-sorted output. Same benchmark
+post-fix: 10,000 nodes in ~60ms (was ~483ms), and the 8x-node-count
+scaling test added as a permanent regression is now linear (2,000→16,000
+nodes: ~8x time, not ~34x). 1 performance regression test
+(`mergeNodes.test.ts`) asserting the *shape* of the scaling (large ≤
+small×20+200ms) rather than an absolute bound, sized by hand against the
+actual pre/post-fix measurements so it discriminates reliably without
+being flaky on a slower CI machine; verified by hand — reverting the fix
+reproduces a real ~2000ms failure against a ~1145ms budget.
+
+### Checked, no issue found
+
+- **ReDoS**: every new regex added this session (event detection, env-var
+  scanning, CI-marker detection) either has no nested/ambiguous quantifiers
+  (simple anchored patterns) or reuses the established
+  `(?:\\.|(?!\1).)*` "quoted-string content" shape already used throughout
+  `interfaces.ts` since early in the project — the two alternatives can
+  never match the same input at the same position, which is what actually
+  prevents catastrophic backtracking, not just "looks similar to a safe
+  one." `readSafe()`'s existing 512KB file-size cap (`interfaces.ts`,
+  `environment.ts`) also bounds worst-case input size regardless.
+- **`pkr compare --run-build`'s subprocess execution**: re-verified rather
+  than re-trusted the earlier build-time reasoning. `npm run <script>` is
+  always one of exactly two literal strings ("build"/"test"), never
+  assembled from repo content; `cwd` is a resolved path, never
+  shell-interpreted; `timeout: 120_000` bounds a hung process.
+- **`versions.ts` scaling**: `listVersions()`/`commitVersion()` read every
+  version file on every call — O(n) per call, O(n²) cumulative over a
+  project's lifetime. Measured at a real (large) scale: 500 existing
+  version files, next `commitVersion()` call at 12.9ms, `listVersions()` at
+  13.3ms. A project would need roughly 1,000+ `pkr update` calls in its
+  entire history before this became tens of seconds of *cumulative*
+  overhead spread across that whole history — never a single
+  user-noticeable slow operation the way the `mergeNodes` finding was.
+  Left as-is; fixing it would mean a persisted running counter (like
+  `IdAllocator`'s `counters.json`), real added complexity for a cost this
+  session's own real-repo validation (§30) never came close to triggering.
+
+### Testing
+
+4 new regression tests total across the three fixes (1 in
+`fileNodeStore.test.ts`, 2 in `synthesize.test.ts`, 1 performance test in
+`mergeNodes.test.ts`), every one verified by hand via revert-and-check
+against the actual real-world reproduction that found it, not a
+synthetic case invented after the fact. `packages/core`: 184 tests / 22
+files. Both packages: **215 tests**.

@@ -128,4 +128,59 @@ describe("mergeDeterministicNodes", () => {
     expect(report.conflicts[0].existing.id).toBe(confirmed.id);
     expect(store.getNode(confirmed.id)).toEqual(confirmed); // still there
   });
+
+  // Found via a real performance review (ARCHITECTURE.md §31), not a
+  // hypothetical: natural-key matching used `oldNodes.find(...)` inside the
+  // per-candidate loop, an O(candidates * existing-nodes) scan. Measured
+  // super-linear at real scale before the fix (10x the nodes -> ~70x the
+  // time in a standalone 10k-node benchmark, not 10x). Fixed by indexing
+  // old nodes into a Map<naturalKey, node> once (O(n)) instead of scanning
+  // per candidate. This test can't reproduce a multi-hundred-ms difference
+  // reliably in CI, so it asserts the *shape* of the scaling (an 8x node
+  // count should cost nowhere near 8x-squared time), not an absolute bound.
+  it("PERFORMANCE REGRESSION: matches candidates against the existing node set in roughly linear time, not quadratic", () => {
+    function apiNode(alloc: IdAllocator, i: number): KnowledgeNode {
+      return makeNode(alloc, "proj", "HTTP", {
+        type: "api-endpoint",
+        title: `GET /route/${i}`,
+        content: `HTTP GET handler for /route/${i}.`,
+        status: "observed",
+        confidence: null,
+        evidence: [{ path: `src/route${i}.js`, lines: [1, 1] }],
+      });
+    }
+
+    function timeMergeOf(n: number): number {
+      const dir2 = tmpDir();
+      const seedAlloc = IdAllocator.load(dir2);
+      const seedStore = FileNodeStore.load(dir2);
+      for (let i = 0; i < n; i++) seedStore.upsertNode(apiNode(seedAlloc, i));
+      seedStore.save();
+      seedAlloc.save();
+
+      const candidates: KnowledgeNode[] = [];
+      const candAlloc = candidateAllocator();
+      for (let i = 0; i < n; i++) candidates.push(apiNode(candAlloc, i)); // identical content -> the worst case for a linear-scan match: every candidate matches, none short-circuit early on a miss
+
+      const freshStore = FileNodeStore.load(dir2);
+      const freshAlloc = IdAllocator.load(dir2);
+      const start = performance.now();
+      mergeDeterministicNodes(freshStore, freshAlloc, "proj", candidates);
+      return performance.now() - start;
+    }
+
+    const small = timeMergeOf(2000);
+    const large = timeMergeOf(16000); // 8x the node count
+
+    // Linear -> ~8x. Quadratic -> ~64x. Generous slack for CI noise/GC
+    // without letting a real regression to O(n^2) hide: a +200ms floor
+    // keeps a near-zero `small` measurement from making the ratio
+    // meaningless, and 20x is comfortably below 64x but well above 8x.
+    // Sizes tuned by hand against the actual old/new implementations (not
+    // guessed): 500/4000 measured 3.5ms/108.9ms pre-fix — the 20x+200ms
+    // budget (270ms) didn't discriminate at that scale, all noise/floor.
+    // 2000/16000 measured 30.5ms/1045ms pre-fix (fails an 810ms budget, as
+    // it should) and 4.8ms/36.4ms post-fix (comfortably passes).
+    expect(large).toBeLessThan(small * 20 + 200);
+  });
 });

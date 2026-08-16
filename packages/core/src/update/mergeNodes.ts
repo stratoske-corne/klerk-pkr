@@ -51,14 +51,32 @@ export function mergeDeterministicNodes(
   const report: NodeMergeReport = { added: [], modified: [], removed: [], conflicts: [], unchangedCount: 0 };
 
   const oldNodesByType = new Map<NodeType, KnowledgeNode[]>();
-  for (const type of NATURAL_KEY_TYPES) oldNodesByType.set(type, store.listNodes({ type }));
+  // Indexed once per type (O(n)), not scanned with `.find()` per candidate
+  // (O(n) per lookup, O(n*m) total) — found via a real performance review,
+  // not a hypothetical: `.find()` against a large existing node set,
+  // repeated for every candidate, measurably super-linear at real scale
+  // (10x the nodes took ~70x longer, not 10x, in a synthetic 10k-node
+  // benchmark). First-match-wins per key to exactly preserve `.find()`'s
+  // old behavior on `store.listNodes()`'s ID-sorted output — a natural-key
+  // collision would be a real bug either way, not something this index
+  // should paper over differently than the old code did.
+  const oldNodeByNaturalKey = new Map<NodeType, Map<string, KnowledgeNode>>();
+  for (const type of NATURAL_KEY_TYPES) {
+    const nodes = store.listNodes({ type });
+    oldNodesByType.set(type, nodes);
+    const byKey = new Map<string, KnowledgeNode>();
+    for (const n of nodes) {
+      const k = naturalKey(n);
+      if (!byKey.has(k)) byKey.set(k, n);
+    }
+    oldNodeByNaturalKey.set(type, byKey);
+  }
 
   const matchedOldIds = new Set<string>();
 
   for (const candidate of candidates) {
-    const oldNodes = oldNodesByType.get(candidate.type) ?? [];
     const key = naturalKey(candidate);
-    const existing = oldNodes.find((n) => naturalKey(n) === key);
+    const existing = oldNodeByNaturalKey.get(candidate.type)?.get(key);
 
     if (!existing) {
       const domain = extractDomainFromId(candidate.id);

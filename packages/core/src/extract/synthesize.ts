@@ -30,6 +30,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import type { IdAllocator } from "../ids.js";
 import { makeInferredNode } from "../node-factory.js";
+import { redactSecrets } from "../secrets.js";
 import type { KnowledgeNode } from "../types.js";
 import type { LlmClient } from "../llm/client.js";
 import type { Inventory } from "./inventory.js";
@@ -142,6 +143,8 @@ export interface SynthesisResult {
   nodes: KnowledgeNode[];
   skipped: SkippedSynthesisNode[];
   excerptFiles: string[];
+  /** Secret-shaped values redacted from excerpt content before it was sent to the LLM API (see buildExcerpts) — distinct from render.ts's redaction count, which is about what got written to disk, not what left the machine. */
+  excerptRedactions: number;
   weaklyGrounded: WeaklyGroundedNode[];
   supersedesClaims: SupersedeClaim[];
 }
@@ -180,7 +183,7 @@ function buildExcerpts(
   inventory: Inventory,
   observedNodes: KnowledgeNode[],
   priorityFiles: string[] = [],
-): Array<{ path: string; content: string }> {
+): { excerpts: Array<{ path: string; content: string }>; excerptRedactions: number } {
   const candidates: string[] = [];
   const add = (p: string) => {
     if (!candidates.includes(p)) candidates.push(p);
@@ -259,12 +262,28 @@ function buildExcerpts(
     add(f.path);
   }
 
+  // SECURITY (found via a real adversarial review, not hypothesized — a
+  // synthetic AWS-key-shaped string embedded in a fixture's entry point was
+  // confirmed present verbatim in the actual prompt string before this fix):
+  // excerpt content is about to leave this machine as part of an Anthropic
+  // API call. Every OTHER path that writes repository content anywhere
+  // (render.ts, PKR_SPEC.md §10) runs it through the same secret write-gate
+  // first — this was the one place that never did, because the gate was
+  // built for "content written to .projectknowledge/" and a prompt sent to
+  // an LLM is a genuinely different kind of destination that the original
+  // design didn't have in view. Redacting here, once, at the single point
+  // every excerpt's content passes through regardless of which selection
+  // rule (0-5 above) picked it.
   const excerpts: Array<{ path: string; content: string }> = [];
+  let excerptRedactions = 0;
   for (const rel of candidates.slice(0, MAX_EXCERPT_FILES)) {
-    const content = readSafe(root, rel, MAX_CHARS_PER_EXCERPT);
-    if (content !== null) excerpts.push({ path: rel, content });
+    const raw = readSafe(root, rel, MAX_CHARS_PER_EXCERPT);
+    if (raw === null) continue;
+    const { text: content, redactions } = redactSecrets(raw);
+    excerptRedactions += redactions.length;
+    excerpts.push({ path: rel, content });
   }
-  return excerpts;
+  return { excerpts, excerptRedactions };
 }
 
 function summarizeObservedFacts(projectName: string, projectDescription: string | null, observedNodes: KnowledgeNode[]): string {
@@ -334,7 +353,7 @@ export async function synthesizeProductAndBehavior(
   /** Files this `pkr update` run's own inventory diff found added/modified — given top excerpt priority (ARCHITECTURE.md §20 M7). Defaults to `[]` on `pkr export` (nothing has "changed" on a first export). */
   changedFiles: string[] = [],
 ): Promise<SynthesisResult> {
-  const excerpts = buildExcerpts(root, inventory, observedNodes, changedFiles);
+  const { excerpts, excerptRedactions } = buildExcerpts(root, inventory, observedNodes, changedFiles);
 
   // Evidence verification checks against exactly what the model was actually
   // shown — not the whole repo inventory (ARCHITECTURE.md §16 Run 3: the old
@@ -447,5 +466,5 @@ export async function synthesizeProductAndBehavior(
     }
   }
 
-  return { nodes, skipped, excerptFiles: excerpts.map((e) => e.path), weaklyGrounded, supersedesClaims };
+  return { nodes, skipped, excerptFiles: excerpts.map((e) => e.path), excerptRedactions, weaklyGrounded, supersedesClaims };
 }

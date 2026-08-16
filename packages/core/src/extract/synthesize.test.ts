@@ -450,3 +450,44 @@ describe("synthesizeProductAndBehavior — architecture-overview (ARCHITECTURE.m
     expect(result.skipped[0].reason).toContain("no verifiable evidence path");
   });
 });
+
+describe("synthesizeProductAndBehavior — excerpt content is redacted before it reaches the LLM (ARCHITECTURE.md §31 security review)", () => {
+  // Found via a deliberate adversarial review, not a fixture built to prove
+  // a point after the fact: a real-shaped AWS access key embedded in an
+  // entry point (exactly the kind of file buildExcerpts() prioritizes) was
+  // confirmed present verbatim in the actual prompt string sent to
+  // `LlmClient.complete()` before this fix — the secret write-gate
+  // (secrets.ts) had only ever been wired into render.ts (what gets written
+  // to .projectknowledge/), never into the one place repository content
+  // leaves the machine entirely, as part of an Anthropic API call.
+  it("REGRESSION: a real-shaped secret embedded in an excerpt file never reaches the LLM prompt", async () => {
+    const root = tmpDir();
+    fs.writeFileSync(path.join(root, "README.md"), "# Demo\n");
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(
+      path.join(root, "src", "index.js"),
+      "// TEMP: hardcoded during a debugging session, forgot to remove\nconst awsKey = \"AKIAIOSFODNN7EXAMPLE\";\nconst app = require('express')();\napp.listen(3000);\n",
+    );
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const { llm, lastParams } = capturingLlm([]);
+
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, llm);
+
+    const sentPrompt = lastParams()!.user;
+    expect(sentPrompt).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(sentPrompt).toContain("[REDACTED:AWS access key]"); // redacted, not silently dropped — the file's presence/shape is still visible
+    expect(result.excerptRedactions).toBeGreaterThan(0);
+  });
+
+  it("reports zero excerpt redactions when nothing secret-shaped is present, not a false positive", async () => {
+    const root = tmpDir();
+    fs.writeFileSync(path.join(root, "README.md"), "# Demo\nJust an ordinary project.\n");
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const { llm } = capturingLlm([]);
+
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, llm);
+    expect(result.excerptRedactions).toBe(0);
+  });
+});

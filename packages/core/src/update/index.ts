@@ -59,6 +59,8 @@ export interface LlmUpdateReport {
   ranSuccessfully: boolean;
   added: KnowledgeNode[];
   skipped: SkippedSynthesisNode[];
+  /** Secret-shaped values redacted from excerpt content before it left this machine as part of the LLM API call — see synthesize.ts's SynthesisResult doc. */
+  excerptRedactions: number;
   weaklyGrounded: WeaklyGroundedNode[];
   /** ARCHITECTURE.md §19 — non-confirmed prior nodes this call replaced (edges created, target kept but excluded from the main rendered files). */
   superseded: InferredReconcileReport["superseded"];
@@ -184,12 +186,13 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
         ranSuccessfully: true,
         added: result.nodes,
         skipped: result.skipped,
+        excerptRedactions: result.excerptRedactions,
         weaklyGrounded: result.weaklyGrounded,
         superseded: reconcile.superseded,
         conflicts: reconcile.conflicts,
       };
     } catch (err) {
-      llmReport = { ranSuccessfully: false, added: [], skipped: [], weaklyGrounded: [], superseded: [], conflicts: [], error: (err as Error).message };
+      llmReport = { ranSuccessfully: false, added: [], skipped: [], excerptRedactions: 0, weaklyGrounded: [], superseded: [], conflicts: [], error: (err as Error).message };
     }
   }
 

@@ -72,6 +72,9 @@ program
         for (const s of result.synthesis.skipped) {
           console.log(`    - skipped "${s.title}": ${s.reason}`);
         }
+        if (result.synthesis.excerptRedactions > 0) {
+          console.log(`  ⚠ ${result.synthesis.excerptRedactions} likely secret value(s) were redacted from excerpts before being sent to the LLM API.`);
+        }
         if (result.synthesis.weaklyGrounded.length > 0) {
           console.log(`  ⚠ ${result.synthesis.weaklyGrounded.length} node(s) kept but weakly grounded (evidence path was real but its content was never shown to the model — worth a closer look):`);
           for (const w of result.synthesis.weaklyGrounded) {
@@ -204,6 +207,9 @@ program
       if (result.llm.ranSuccessfully) {
         console.log(`Stage 6: proposed ${result.llm.added.length} new node(s)${result.llm.skipped.length ? `, dropped ${result.llm.skipped.length} for unverifiable evidence` : ""}.`);
         for (const n of result.llm.added) console.log(`  + ${n.id}  ${n.title}`);
+        if (result.llm.excerptRedactions > 0) {
+          console.log(`  ⚠ ${result.llm.excerptRedactions} likely secret value(s) were redacted from excerpts before being sent to the LLM API.`);
+        }
         if (result.llm.weaklyGrounded.length > 0) {
           console.log(`  ⚠ ${result.llm.weaklyGrounded.length} node(s) kept but weakly grounded (evidence path was real but its content was never shown to the model):`);
           for (const w of result.llm.weaklyGrounded) console.log(`    - ${w.id}: "${w.title}"`);

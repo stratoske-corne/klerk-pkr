@@ -13,6 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { KnowledgeNode, KnowledgeEdge, type KnowledgeNode as TNode, type KnowledgeEdge as TEdge } from "../types.js";
+import { redactSecrets } from "../secrets.js";
 
 export class ConfirmedNodeOverwriteError extends Error {
   constructor(nodeId: string) {
@@ -98,11 +99,28 @@ export class FileNodeStore {
     return [...this.edges.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
 
+  /**
+   * SECURITY (ARCHITECTURE.md §31): PKR_SPEC.md §10 says "the exporter must
+   * never write a literal secret value into any generated file" —
+   * `.knowledge/nodes.jsonl` is a generated file (it's inside
+   * `.projectknowledge/`), but until this fix the secret write-gate had only
+   * ever been wired into render.ts's Markdown output, never here. A human
+   * pasting a real secret into `pkr edit --content` (the one new code path
+   * this session that puts genuinely arbitrary text into a node without
+   * going through any prior extraction/synthesis step) would have written
+   * it to disk, in plaintext, permanently — confirmed with a real AWS-shaped
+   * key before this fix, not hypothesized. Redacts on the way to disk only,
+   * not the in-memory node — mirrors render.ts's own approach, and keeps
+   * `upsertNode`'s confirmed-node comparisons operating on the caller's
+   * actual values.
+   */
   save(): void {
     fs.mkdirSync(this.knowledgeDir, { recursive: true });
     this.writeJsonl(
       path.join(this.knowledgeDir, "nodes.jsonl"),
-      this.listNodes().map((n) => KnowledgeNode.parse(n)),
+      this.listNodes().map((n) =>
+        KnowledgeNode.parse({ ...n, title: redactSecrets(n.title).text, content: redactSecrets(n.content).text }),
+      ),
     );
     this.writeJsonl(
       path.join(this.knowledgeDir, "edges.jsonl"),
