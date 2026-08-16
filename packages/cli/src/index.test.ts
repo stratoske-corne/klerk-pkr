@@ -231,3 +231,64 @@ describe("pkr CLI — Knowledge Versioning (ARCHITECTURE.md §24)", () => {
     expect(logOut.stdout).not.toContain("v0.2");
   });
 });
+
+describe("pkr CLI — diff (ARCHITECTURE.md §24)", () => {
+  function pkrDirFor(dir: string): string {
+    return path.join(dir, ".projectknowledge");
+  }
+
+  it("shows what changed between v0.1 and v0.2", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+    expect(runCli(["update", dir]).status).toBe(0);
+
+    const { stdout, status } = runCli(["diff", pkrDirFor(dir), "v0.1", "v0.2"]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("Diff v0.1 → v0.2");
+    expect(stdout).toContain("+ API-HTTP-001  (added)");
+    expect(stdout).toContain("Summary: +1");
+  });
+
+  it("defaults `to` to the latest version when omitted", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+    expect(runCli(["update", dir]).status).toBe(0);
+
+    const { stdout, status } = runCli(["diff", pkrDirFor(dir), "v0.1"]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("Diff v0.1 → v0.2");
+  });
+
+  it("reports no changes for identical versions instead of an empty range", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    const { stdout, status } = runCli(["diff", pkrDirFor(dir), "v0.1", "v0.1"]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("No changes");
+  });
+
+  it("a reversed range fails cleanly with a helpful hint, not a stack trace", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+    expect(runCli(["update", dir]).status).toBe(0);
+
+    const { stdout, stderr, status } = runCli(["diff", pkrDirFor(dir), "v0.2", "v0.1"]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("did you mean `pkr diff v0.1 v0.2`");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+
+  it("an unknown version fails cleanly, not a stack trace", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    const { stdout, stderr, status } = runCli(["diff", pkrDirFor(dir), "v0.99"]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain('Unknown version "v0.99"');
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+});

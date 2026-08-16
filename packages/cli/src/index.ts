@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, type ContextTarget, type KnowledgeNode } from "@klerk/core";
+import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, diffVersions, summarizeChanges, type ContextTarget, type KnowledgeNode } from "@klerk/core";
 
 const program = new Command();
 
@@ -254,6 +254,45 @@ program
       console.log(`  parent: ${v.parent_version ?? "(none — initial version)"}`);
       console.log("");
     }
+  });
+
+program
+  .command("diff")
+  .description("Show what changed between two committed Knowledge Versions (ARCHITECTURE.md §24). `to` defaults to the latest version — a `git log from..to`-style range, not a computed content diff.")
+  .argument("<pkr-dir>", "path to a .projectknowledge/ directory")
+  .argument("<from>", "version to diff from, e.g. v0.1")
+  .argument("[to]", "version to diff to (default: the latest committed version)")
+  .action((pkrDir: string, from: string, to: string | undefined) => {
+    const resolvedPkrDir = path.resolve(process.cwd(), pkrDir);
+    if (!fs.existsSync(path.join(resolvedPkrDir, "manifest.yaml"))) {
+      throw new Error(`Not a Project Knowledge Repository (no manifest.yaml found at ${resolvedPkrDir})`);
+    }
+
+    const result = diffVersions(path.join(resolvedPkrDir, ".knowledge"), from, to);
+
+    if (result.from === result.to) {
+      console.log(`No changes — "${result.from}" and "${result.to}" are the same version.`);
+      return;
+    }
+
+    console.log(`Diff ${result.from} → ${result.to}:`);
+    console.log("");
+    if (result.entries.length === 0) {
+      console.log("  (no fact-level changes recorded in this range)");
+      return;
+    }
+
+    const marker: Record<string, string> = { added: "+", modified: "~", removed: "-", superseded: "~", conflict: "!" };
+    let currentVersion: string | null = null;
+    for (const e of result.entries) {
+      if (e.version !== currentVersion) {
+        currentVersion = e.version;
+        console.log(`  ${e.version}:`);
+      }
+      console.log(`    ${marker[e.change]} ${e.id}  (${e.change})`);
+    }
+    console.log("");
+    console.log(`Summary: ${summarizeChanges(result.entries)}`);
   });
 
 // Every command action above can throw a plain `Error` from core (bad path,

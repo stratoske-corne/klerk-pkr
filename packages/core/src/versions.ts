@@ -115,3 +115,67 @@ export function summarizeChanges(changedNodes: ChangedNode[]): string {
   if (counts.conflict) parts.push(`${counts.conflict} conflict(s) — needs review`);
   return parts.length ? parts.join(", ") : "no changes"; // commitVersion already guards the empty case
 }
+
+function bareVersionNumber(version: string): number | null {
+  const m = /^v0\.(\d+)$/.exec(version);
+  return m ? Number(m[1]) : null;
+}
+
+export interface VersionDiffEntry extends ChangedNode {
+  /** Which version's commit this change happened in — a range can span more than one. */
+  version: string;
+}
+
+export interface VersionDiffResult {
+  from: string;
+  to: string;
+  /** Every changed_nodes entry from every version strictly after `from` up to and including `to`, oldest first. Raw, not deduped/net'd — a node touched twice in the range appears twice (ARCHITECTURE.md §24 — no branching/merge logic exists to collapse that honestly yet). */
+  entries: VersionDiffEntry[];
+}
+
+/**
+ * Aggregates the changed_nodes of every version strictly between `from`
+ * (exclusive) and `to` (inclusive), walking `parent_version` — a `git log
+ * from..to`-style range, not a computed before/after content diff (that
+ * would need to compare actual node content, not just this per-commit
+ * ledger — a deliberately bigger feature, not built here). `to` defaults to
+ * the latest committed version. Only supports a straight ancestor chain —
+ * there's no branching in this data model yet (ARCHITECTURE.md §15 rules
+ * it out at the product level too).
+ */
+export function diffVersions(knowledgeDir: string, fromVersion: string, toVersion?: string): VersionDiffResult {
+  const versions = listVersions(knowledgeDir);
+  if (versions.length === 0) {
+    throw new Error("No knowledge versions committed yet — run `pkr export` first.");
+  }
+
+  const byVersion = new Map<string, VersionRecord>(versions.map((v) => [v.version, v]));
+  const to = toVersion ?? versions[versions.length - 1].version;
+
+  if (!byVersion.has(fromVersion)) throw new Error(`Unknown version "${fromVersion}" — see \`pkr log\` for what's actually committed.`);
+  if (!byVersion.has(to)) throw new Error(`Unknown version "${to}" — see \`pkr log\` for what's actually committed.`);
+
+  if (fromVersion === to) return { from: fromVersion, to, entries: [] };
+
+  const chain: VersionRecord[] = [];
+  let cursor: string | null = to;
+  while (cursor !== null && cursor !== fromVersion) {
+    const record: VersionRecord = byVersion.get(cursor)!; // present — every parent_version is itself a committed version
+    chain.push(record);
+    cursor = record.parent_version;
+  }
+
+  if (cursor !== fromVersion) {
+    const fromN = bareVersionNumber(fromVersion);
+    const toN = bareVersionNumber(to);
+    const reversedHint = fromN !== null && toN !== null && fromN > toN ? ` (did you mean \`pkr diff ${to} ${fromVersion}\`?)` : "";
+    throw new Error(`"${fromVersion}" is not an ancestor of "${to}" — pkr diff only supports a straight version range${reversedHint}.`);
+  }
+
+  chain.reverse(); // oldest -> newest
+  const entries: VersionDiffEntry[] = [];
+  for (const record of chain) {
+    for (const c of record.changed_nodes) entries.push({ ...c, version: record.version });
+  }
+  return { from: fromVersion, to, entries };
+}

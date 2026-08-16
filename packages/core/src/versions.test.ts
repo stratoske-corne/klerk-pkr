@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { commitVersion, listVersions, summarizeChanges, type ChangedNode } from "./versions.js";
+import { commitVersion, listVersions, summarizeChanges, diffVersions, type ChangedNode } from "./versions.js";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "klerk-versions-"));
@@ -73,5 +73,54 @@ describe("summarizeChanges", () => {
 
   it("omits zero-count categories", () => {
     expect(summarizeChanges([{ id: "A", change: "added" }])).toBe("+1");
+  });
+});
+
+describe("diffVersions", () => {
+  function commitThree(dir: string): void {
+    commitVersion(dir, { summary: "v1", changedNodes: [{ id: "A", change: "added" }], sourceCommit: null }); // v0.1
+    commitVersion(dir, { summary: "v2", changedNodes: [{ id: "B", change: "added" }], sourceCommit: null }); // v0.2
+    commitVersion(dir, { summary: "v3", changedNodes: [{ id: "A", change: "modified" }], sourceCommit: null }); // v0.3
+  }
+
+  it("aggregates changed_nodes across every version strictly after `from` up to and including `to`", () => {
+    const dir = tmpDir();
+    commitThree(dir);
+    const result = diffVersions(dir, "v0.1", "v0.3");
+    expect(result).toMatchObject({ from: "v0.1", to: "v0.3" });
+    expect(result.entries).toEqual([
+      { id: "B", change: "added", version: "v0.2" },
+      { id: "A", change: "modified", version: "v0.3" },
+    ]);
+  });
+
+  it("defaults `to` to the latest committed version when omitted", () => {
+    const dir = tmpDir();
+    commitThree(dir);
+    const result = diffVersions(dir, "v0.1");
+    expect(result.to).toBe("v0.3");
+  });
+
+  it("returns no entries when `from` and `to` are the same version", () => {
+    const dir = tmpDir();
+    commitThree(dir);
+    const result = diffVersions(dir, "v0.2", "v0.2");
+    expect(result.entries).toEqual([]);
+  });
+
+  it("rejects a reversed range with a helpful hint", () => {
+    const dir = tmpDir();
+    commitThree(dir);
+    expect(() => diffVersions(dir, "v0.3", "v0.1")).toThrow(/not an ancestor.*did you mean `pkr diff v0.1 v0.3`/);
+  });
+
+  it("rejects an unknown version by name", () => {
+    const dir = tmpDir();
+    commitThree(dir);
+    expect(() => diffVersions(dir, "v0.99", "v0.3")).toThrow(/Unknown version "v0.99"/);
+  });
+
+  it("throws a clear error when nothing has been committed yet", () => {
+    expect(() => diffVersions(tmpDir(), "v0.1")).toThrow(/No knowledge versions committed yet/);
   });
 });
