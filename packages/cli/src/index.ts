@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, diffVersions, summarizeChanges, runCompare, type ContextTarget, type KnowledgeNode } from "@klerk/core";
+import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, diffVersions, summarizeChanges, runCompare, confirmOrEditNode, type ContextTarget, type KnowledgeNode } from "@klerk/core";
 
 const program = new Command();
 
@@ -327,6 +327,39 @@ program
     } else {
       console.log("Overall reconstruction score: not computable — no row was measurable.");
     }
+  });
+
+function printCorrectionResult(kind: "confirm" | "edit", result: ReturnType<typeof confirmOrEditNode>): void {
+  console.log(`✓ ${result.node.id} is now confirmed${result.wasAlreadyConfirmed ? " (was already confirmed — re-" + kind + "ed)" : ""}.`);
+  console.log(`  "${result.node.title}"`);
+  console.log(`  Protected from silent overwrite from now on (PKR_SPEC.md §4.2) — a conflicting future extraction becomes a \`conflicts_with\` edge, not a rewrite.`);
+  console.log(`  Committed knowledge version: ${result.knowledgeVersion} (see \`pkr log\`)`);
+  console.log(`  Wrote ${result.writtenFiles.length} file(s).`);
+}
+
+program
+  .command("confirm")
+  .description("Mark a node as human-confirmed, as-is (PRODUCT_SPEC.md §5.5, PKR_SPEC.md §4.2). Confirmed nodes are protected from silent overwrite by future `pkr update` runs.")
+  .argument("<pkr-dir>", "path to a .projectknowledge/ directory")
+  .argument("<node-id>", "the node's ID, e.g. REQ-AUTH-004 (see the rendered files or .knowledge/nodes.jsonl)")
+  .action((pkrDir: string, nodeId: string) => {
+    const result = confirmOrEditNode({ outDir: path.resolve(process.cwd(), pkrDir), nodeId });
+    printCorrectionResult("confirm", result);
+  });
+
+program
+  .command("edit")
+  .description("Correct a node's title and/or content, then confirm it (PRODUCT_SPEC.md §5.5) — editing a fact is correcting it, so it becomes protected the same way `pkr confirm` does. At least one of --title/--content is required.")
+  .argument("<pkr-dir>", "path to a .projectknowledge/ directory")
+  .argument("<node-id>", "the node's ID, e.g. REQ-AUTH-004")
+  .option("--title <title>", "new title")
+  .option("--content <content>", "new content")
+  .action((pkrDir: string, nodeId: string, opts: { title?: string; content?: string }) => {
+    if (opts.title === undefined && opts.content === undefined) {
+      throw new Error("pkr edit needs at least one of --title or --content (use `pkr confirm` to confirm a node unchanged).");
+    }
+    const result = confirmOrEditNode({ outDir: path.resolve(process.cwd(), pkrDir), nodeId, title: opts.title, content: opts.content });
+    printCorrectionResult("edit", result);
   });
 
 // Every command action above can throw a plain `Error` from core (bad path,

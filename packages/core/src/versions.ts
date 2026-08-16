@@ -12,10 +12,12 @@
  * update, it doesn't gate applying one. See ARCHITECTURE.md §24 for the
  * full scope decision.
  *
- * `author` is always `extractor:pkr-cli@0.1.0` for the same reason: there's
- * no interactive `pkr confirm`/`pkr edit` yet to attribute a version to a
- * specific human (PKR_SPEC.md §8 already describes those commands but they
- * aren't built — see ARCHITECTURE.md §0).
+ * `author` defaults to `extractor:pkr-cli@0.1.0` for every automated commit
+ * (`pkr export`/`pkr update`). `pkr confirm`/`pkr edit` (correct.ts) pass
+ * `author: "human"` explicitly — still not a specific person (no accounts,
+ * no auth — ARCHITECTURE.md §7 "Hosted platform... not built, by design"),
+ * just the same coarse human/extractor distinction `confirmed_by` already
+ * uses.
  *
  * Numbering is derived by reading `.knowledge/versions/` itself (no
  * separate counter file) — versions are an append-only immutable log, the
@@ -27,7 +29,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import yaml from "js-yaml";
 
-export type ChangeKind = "added" | "modified" | "removed" | "superseded" | "conflict";
+export type ChangeKind = "added" | "modified" | "removed" | "superseded" | "conflict" | "confirmed";
 
 export interface ChangedNode {
   id: string;
@@ -78,7 +80,7 @@ function latestVersion(knowledgeDir: string): VersionRecord | null {
  */
 export function commitVersion(
   knowledgeDir: string,
-  input: { summary: string; changedNodes: ChangedNode[]; sourceCommit: string | null; reason?: string },
+  input: { summary: string; changedNodes: ChangedNode[]; sourceCommit: string | null; reason?: string; author?: string },
 ): string | null {
   if (input.changedNodes.length === 0) return null;
 
@@ -90,7 +92,7 @@ export function commitVersion(
     version,
     parent_version: parent?.version ?? null,
     created_at: new Date().toISOString(),
-    author: AUTO_AUTHOR,
+    author: input.author ?? AUTO_AUTHOR,
     summary: input.summary,
     changed_nodes: input.changedNodes,
     ...(input.reason ? { reason: input.reason } : {}),
@@ -104,7 +106,7 @@ export function commitVersion(
 
 /** Auto-generated one-line summary from a set of changed nodes, e.g. "+3, ~1, 1 superseded". */
 export function summarizeChanges(changedNodes: ChangedNode[]): string {
-  const counts: Record<ChangeKind, number> = { added: 0, modified: 0, removed: 0, superseded: 0, conflict: 0 };
+  const counts: Record<ChangeKind, number> = { added: 0, modified: 0, removed: 0, superseded: 0, conflict: 0, confirmed: 0 };
   for (const c of changedNodes) counts[c.change]++;
 
   const parts: string[] = [];
@@ -113,6 +115,7 @@ export function summarizeChanges(changedNodes: ChangedNode[]): string {
   if (counts.removed) parts.push(`-${counts.removed}`);
   if (counts.superseded) parts.push(`${counts.superseded} superseded`);
   if (counts.conflict) parts.push(`${counts.conflict} conflict(s) — needs review`);
+  if (counts.confirmed) parts.push(`${counts.confirmed} confirmed`);
   return parts.length ? parts.join(", ") : "no changes"; // commitVersion already guards the empty case
 }
 

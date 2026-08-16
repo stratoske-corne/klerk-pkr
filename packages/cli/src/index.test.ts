@@ -348,3 +348,76 @@ describe("pkr CLI — compare (ARCHITECTURE.md §25)", () => {
     expect(stdout + stderr).not.toMatch(/at \S+ \(/);
   });
 });
+
+describe("pkr CLI — confirm / edit (ARCHITECTURE.md §26)", () => {
+  function firstNodeId(pkrDir: string): string {
+    const jsonl = fs.readFileSync(path.join(pkrDir, ".knowledge", "nodes.jsonl"), "utf8");
+    const firstLine = jsonl.split("\n").find((l) => l.trim())!;
+    return JSON.parse(firstLine).id;
+  }
+
+  it("pkr confirm marks a node confirmed and reports the committed version", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    const pkrDir = path.join(dir, ".projectknowledge");
+    const nodeId = firstNodeId(pkrDir);
+
+    const { stdout, status } = runCli(["confirm", pkrDir, nodeId]);
+    expect(status).toBe(0);
+    expect(stdout).toContain(`${nodeId} is now confirmed`);
+    expect(stdout).toContain("Committed knowledge version:");
+
+    const reloaded = JSON.parse(fs.readFileSync(path.join(pkrDir, ".knowledge", "nodes.jsonl"), "utf8").split("\n").find((l) => l.includes(nodeId))!);
+    expect(reloaded.status).toBe("confirmed");
+    expect(reloaded.confirmed_by).toBe("human");
+  });
+
+  it("pkr edit overwrites title/content and also confirms", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    const pkrDir = path.join(dir, ".projectknowledge");
+    const nodeId = firstNodeId(pkrDir);
+
+    const { status } = runCli(["edit", pkrDir, nodeId, "--title", "Corrected title", "--content", "Corrected content."]);
+    expect(status).toBe(0);
+
+    const reloaded = JSON.parse(fs.readFileSync(path.join(pkrDir, ".knowledge", "nodes.jsonl"), "utf8").split("\n").find((l) => l.includes(nodeId))!);
+    expect(reloaded.title).toBe("Corrected title");
+    expect(reloaded.status).toBe("confirmed");
+  });
+
+  it("pkr edit with neither --title nor --content fails cleanly", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    const pkrDir = path.join(dir, ".projectknowledge");
+    const nodeId = firstNodeId(pkrDir);
+
+    const { stdout, stderr, status } = runCli(["edit", pkrDir, nodeId]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("needs at least one of --title or --content");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+
+  it("confirming an unknown node ID fails cleanly, not a stack trace", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    const { stdout, stderr, status } = runCli(["confirm", path.join(dir, ".projectknowledge"), "NOPE-DOES-NOT-EXIST"]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain('No node "NOPE-DOES-NOT-EXIST"');
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+
+  it("confirming against a PKR with no internal store fails cleanly, not a stack trace", () => {
+    const dir = fixtureRepo();
+    expect(runCli(["export", dir]).status).toBe(0);
+    const pkrDir = path.join(dir, ".projectknowledge");
+    const nodeId = firstNodeId(pkrDir);
+    fs.rmSync(path.join(pkrDir, ".knowledge"), { recursive: true, force: true }); // simulate a portability/markdown-only copy
+
+    const { stdout, stderr, status } = runCli(["confirm", pkrDir, nodeId]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("no internal .knowledge/ store");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+});
