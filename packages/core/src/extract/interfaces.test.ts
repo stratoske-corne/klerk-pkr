@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { IdAllocator } from "../ids.js";
-import { analyzeApiEndpoints, analyzeDatabaseSchema } from "./interfaces.js";
+import { analyzeApiEndpoints, analyzeDatabaseSchema, analyzeExternalServices } from "./interfaces.js";
 import type { Inventory } from "./inventory.js";
 
 function tmpRepo(): string {
@@ -90,6 +90,112 @@ describe("analyzeApiEndpoints", () => {
       "PATCH /users/:id",
       "POST /users",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Router mount-prefix resolution — found on a real 125-file repo (M6, real
+// difficult-test run): every route file's path was extracted in isolation,
+// with zero awareness of the `app.use('/api/x', xRoute)` call elsewhere that
+// actually prefixes it. Two different real routers both using `.get('/:id')`
+// (an extremely common pattern) collided under the old (method, path)-only
+// de-dupe key and one silently vanished from the PKR — real data loss, not
+// a cosmetic labeling issue.
+// ---------------------------------------------------------------------------
+describe("analyzeApiEndpoints — router mount-prefix resolution", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = tmpRepo();
+  });
+
+  it("REGRESSION: two different routers using the identical relative path no longer collide once their real mount prefixes are known", () => {
+    writeFile(root, "src/routes/glossary.js", "router.get('/:id', getGlossary);\n");
+    writeFile(root, "src/routes/language.js", "router.get('/:id', getLanguage);\n");
+    writeFile(
+      root,
+      "src/index.js",
+      [
+        "const glossaryRoutes = require('./routes/glossary');",
+        "const languageRoutes = require('./routes/language');",
+        "app.use('/api/glossary', glossaryRoutes);",
+        "app.use('/api/language', languageRoutes);",
+      ].join("\n"),
+    );
+
+    const nodes = analyzeApiEndpoints(
+      root,
+      inventoryOf(root, ["src/routes/glossary.js", "src/routes/language.js", "src/index.js"]),
+      IdAllocator.load(tmpRepo()),
+      "proj",
+    );
+
+    // Before the fix: both collapsed into a single "GET /:id" node, one silently dropped.
+    expect(nodes.map((n) => n.title).sort()).toEqual(["GET /api/glossary/:id", "GET /api/language/:id"]);
+  });
+
+  it("resolves an ES-module default import the same way as a CommonJS require", () => {
+    writeFile(root, "src/routes/user.js", "router.post('/register', register);\n");
+    writeFile(
+      root,
+      "src/index.js",
+      ["import userRoutes from './routes/user.js';", "app.use('/api/user', userRoutes);"].join("\n"),
+    );
+
+    const nodes = analyzeApiEndpoints(
+      root,
+      inventoryOf(root, ["src/routes/user.js", "src/index.js"]),
+      IdAllocator.load(tmpRepo()),
+      "proj",
+    );
+    expect(nodes.map((n) => n.title)).toEqual(["POST /api/user/register"]);
+  });
+
+  it("falls back to the old prefix-less behavior for a route file with no resolvable mount (never removes information, only adds it)", () => {
+    writeFile(root, "src/routes/orphan.js", "router.get('/:id', getOne);\n");
+    // No app.use() anywhere referencing this file at all.
+    const nodes = analyzeApiEndpoints(root, inventoryOf(root, ["src/routes/orphan.js"]), IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes.map((n) => n.title)).toEqual(["GET /:id"]);
+  });
+
+  it("does not mistake an inline middleware call for a router mount (e.g. app.use(cors(...)))", () => {
+    writeFile(root, "src/routes/user.js", "router.get('/:id', getOne);\n");
+    writeFile(
+      root,
+      "src/index.js",
+      [
+        "const userRoutes = require('./routes/user');",
+        "app.use(cors({ origin: '*' }));", // single string-shaped-looking arg but not a literal prefix — must not confuse the parser
+        "app.use('/api/user', userRoutes);",
+      ].join("\n"),
+    );
+    const nodes = analyzeApiEndpoints(
+      root,
+      inventoryOf(root, ["src/routes/user.js", "src/index.js"]),
+      IdAllocator.load(tmpRepo()),
+      "proj",
+    );
+    expect(nodes.map((n) => n.title)).toEqual(["GET /api/user/:id"]);
+  });
+
+  it("emits one endpoint per prefix when the same router is mounted more than once", () => {
+    writeFile(root, "src/routes/health.js", "router.get('/', ping);\n");
+    writeFile(
+      root,
+      "src/index.js",
+      [
+        "const healthRoutes = require('./routes/health');",
+        "app.use('/api/health', healthRoutes);",
+        "app.use('/internal/health', healthRoutes);",
+      ].join("\n"),
+    );
+    const nodes = analyzeApiEndpoints(
+      root,
+      inventoryOf(root, ["src/routes/health.js", "src/index.js"]),
+      IdAllocator.load(tmpRepo()),
+      "proj",
+    );
+    expect(nodes.map((n) => n.title).sort()).toEqual(["GET /api/health", "GET /internal/health"]);
   });
 });
 
@@ -222,5 +328,26 @@ describe("analyzeDatabaseSchema — Mongoose", () => {
     writeFile(root, "schema.prisma", "model Post {\n  id    Int    @id\n  title String\n}\n");
     const nodes = analyzeDatabaseSchema(root, inventoryOf(root, ["schema.prisma"]), IdAllocator.load(tmpRepo()), "proj");
     expect(nodes.map((n) => n.title)).toEqual(["Post"]);
+  });
+});
+
+describe("analyzeExternalServices", () => {
+  it("detects known services from raw dependency package names (baseline)", () => {
+    const nodes = analyzeExternalServices(["stripe", "mongoose"], IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes.map((n) => n.title).sort()).toEqual(["MongoDB (via Mongoose)", "Stripe"]);
+  });
+
+  it("REGRESSION: recognizes kafkajs, socket.io, and @google/generative-ai — found missing on a real repo (ARCHITECTURE.md §20)", () => {
+    const nodes = analyzeExternalServices(
+      ["kafkajs", "socket.io", "@google/generative-ai"],
+      IdAllocator.load(tmpRepo()),
+      "proj",
+    );
+    expect(nodes.map((n) => n.title).sort()).toEqual(["Google Generative AI (Gemini)", "Kafka (via KafkaJS)", "Socket.IO"]);
+  });
+
+  it("ignores unknown package names without erroring", () => {
+    const nodes = analyzeExternalServices(["some-random-internal-utility"], IdAllocator.load(tmpRepo()), "proj");
+    expect(nodes).toHaveLength(0);
   });
 });

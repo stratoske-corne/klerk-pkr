@@ -83,6 +83,78 @@ describe("synthesizeProductAndBehavior excerpt selection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Priority for `pkr update`'s own changed files (ARCHITECTURE.md §20 M7): a
+// real, organic 12-commit feature (introducing a Kafka producer/consumer
+// event system, 23 real changed files) on a real repo triggered `pkr update
+// --llm`, and not one of the 8 excerpt slots went to any of the 23 files
+// that update was actually about — the selection heuristic re-ran a generic
+// "orient a stranger to this whole repo" pass every time, blind to what the
+// update's own inventory diff already knew changed. Zero of the 7 proposed
+// nodes mentioned the feature the update was triggered by.
+// ---------------------------------------------------------------------------
+describe("synthesizeProductAndBehavior — excerpt priority for changed files (pkr update)", () => {
+  /** README + entry point + 6 same-sized decoys exactly fill MAX_EXCERPT_FILES(8) via the size-fallback rule, same fixture shape as the grounding-tier tests above — guarantees a small "changed" file can only get in by being prioritized, not by winning on size. */
+  function budgetFullFixtureRoot(): string {
+    const root = tmpDir();
+    fs.writeFileSync(path.join(root, "README.md"), "# Demo\n");
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "server.js"), "// entry point\n");
+    for (let i = 0; i < 6; i++) {
+      fs.writeFileSync(path.join(root, "src", `decoy${i}.js`), "// filler\n".repeat(50));
+    }
+    fs.writeFileSync(path.join(root, "src", "kafkaProducer.js"), "// small, but this is what actually changed\n");
+    return root;
+  }
+
+  it("REGRESSION: a file the update's own diff knows changed gets excerpt priority, even under a full budget", async () => {
+    const root = budgetFullFixtureRoot();
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const result = await synthesizeProductAndBehavior(
+      root,
+      inventory,
+      [],
+      "proj",
+      "demo",
+      null,
+      allocator,
+      noopLlm,
+      [], // no existing inferred nodes
+      ["src/kafkaProducer.js"], // changedFiles — this update's own diff
+    );
+    expect(result.excerptFiles).toContain("src/kafkaProducer.js");
+  });
+
+  it("without changedFiles (pkr export — nothing has 'changed' on a first export), the same small file loses to the size-based fallback", async () => {
+    const root = budgetFullFixtureRoot();
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const result = await synthesizeProductAndBehavior(root, inventory, [], "proj", "demo", null, allocator, noopLlm);
+    expect(result.excerptFiles).not.toContain("src/kafkaProducer.js");
+  });
+
+  it("ignores a changed-file path that isn't in the current inventory (e.g. since deleted) without erroring", async () => {
+    const root = tmpDir();
+    fs.writeFileSync(path.join(root, "README.md"), "# Demo\n");
+    const inventory = buildInventory(root);
+    const allocator = IdAllocator.load(tmpDir());
+    const result = await synthesizeProductAndBehavior(
+      root,
+      inventory,
+      [],
+      "proj",
+      "demo",
+      null,
+      allocator,
+      noopLlm,
+      [],
+      ["src/does-not-exist-anymore.js"],
+    );
+    expect(result.excerptFiles).toEqual(["README.md"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Evidence-grounding tiers (ARCHITECTURE.md §16 Run 3, third finding): a
 // claimed evidence path must have actually been shown to the model — either
 // as excerpt content (strong) or as another observed node's evidence pointer

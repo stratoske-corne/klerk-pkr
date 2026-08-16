@@ -12,16 +12,16 @@ Kept current as code lands, so this document doesn't drift from reality.
 |---|---|
 | Stage 1 — Ingest & inventory | ✅ built (`packages/core/src/extract/inventory.ts`) |
 | Stage 2 — Manifest & dependency analysis | ✅ built, package.json only (`extract/dependencies.ts`) |
-| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing), DB schema (Prisma + raw SQL `CREATE TABLE` + **Mongoose `Schema`/`model()` pairs**), external services (dependency lookup). The two bolded items were the M3-discovered gaps (§16) — both fixed 2026-08-16, tested against fixtures modeled on the real repo that surfaced them (§16/§18). Event detection not built. (`extract/interfaces.ts`) |
+| Stage 3 — Interface analysis | ✅ built: HTTP routes (Express/Fastify/Koa-style direct calls **and** `router.route(x).get()/.post()/...` chains + Next.js file routing, **now with single-level router mount-prefix resolution** — §20), DB schema (Prisma + raw SQL `CREATE TABLE` + Mongoose `Schema`/`model()` pairs), external services (dependency lookup, now including `kafkajs`/`socket.io`/`@google/generative-ai` — §20). The chained-route/Mongoose/mount-prefix/external-services items were all real-repo-discovered gaps (§16 M3, §20 M6) — fixed same-session each time, tested against fixtures modeled on the real repos that surfaced them. Event detection not built. (`extract/interfaces.ts`) |
 | Stage 4 — Structure analysis | ✅ built (`extract/structure.ts`) |
 | Stage 5 — Test & environment analysis | ❌ not built |
 | Stage 6 — Semantic synthesis (LLM) | ✅ built (`extract/synthesize.ts`, `llm/anthropic.ts`) — proposes `requirement`/`user-flow`/`domain-concept`/`business-rule`/`invariant`/`edge-case`/`error-behavior` nodes. Requires `ANTHROPIC_API_KEY`; skips gracefully (deterministic-only export) if unset or `--no-llm` is passed. Every claimed evidence path is checked against what was actually shown to the model (excerpt content or an observed node's evidence pointer), not the whole repo inventory — unverifiable ones are dropped and reported, weakly-grounded ones (real path, content never shown) are kept but flagged separately, not softened silently. `architecture/overview.md` narrative synthesis not built (no matching node type yet). **2026-08-16, first real (non-standing-in) API validation** (§16 Run 3) found and fixed three gaps in one session, each confirmed by a real API call before being traced and fixed: (1) `buildExcerpts()` silently excluded `docs/` subdirectories, (2) the file with the actual business logic was never an excerpt candidate under any selection rule (new size-based fallback added), (3) evidence verification accepted any real repo file, not just paths actually shown to the model (now tiered: excerpt-backed vs. fact-summary-only, the latter flagged as `weaklyGrounded`). Clean before/after on the same repo+model for (1)+(2): proposed nodes went from surface-level-only to correctly capturing every real business rule. |
 | Stage 7 — Render & write | ✅ built (`render/render.ts`), including the secret write-gate |
 | `pkr export` CLI (aliased `pkr init`) | ✅ built (`packages/cli`), flags: `--out`, `--no-llm`, `--model` |
 | `pkr context` | ✅ built (`packages/core/src/context/`) — renders a single continuation-context file (`PROJECT_CONTEXT.md` / `CLAUDE_CONTEXT.md` / `AGENTS_CONTEXT.md` per `--target`) from a PKR, framed for "keep working on this existing project," not "rebuild it." Per-target content differentiation is a stub (identical facts, different filename/framing note) — real differentiation deferred until a concrete need shows up. See §17 for why this — not `pkr reconstruct` — is the primary product surface. **2026-08-16 addition** (the "agent-instruction, not a daemon" automation route, chosen over a file-watcher or git hook — see chat log rationale): the rendered file now (a) tells the agent explicitly to run `pkr update <repo>` when it finishes making changes, and (b) runs a best-effort staleness check (`--repo`, defaults to the PKR dir's parent) reusing `pkr update`'s own `diffInventory` machinery, surfacing a changed-file count or an honest "unknown" rather than silently assuming freshness. Found and fixed a real bug while verifying this live (not just via fixtures): `.context/`/`.reconstruction/` weren't in `extract/inventory.ts`'s `ALWAYS_IGNORE`, so writing a context file counted as drift against *itself* on the very next run — regression-tested in `context/index.test.ts`. |
-| `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 and now reconciles against existing inferred knowledge (§19, implemented 2026-08-16, motivated by a real bug found in §16 Run 4): the model is shown current inferred nodes and can mark ones it replaces via `supersedes`; `update/reconcileInferredNodes.ts` turns that into a `conflicts_with` edge (confirmed target — untouched, human resolves) or a `supersedes` edge (non-confirmed target — kept in the store, excluded from the main rendered files into a new `superseded.md`). Real-call validated same day (§19): correctly proposed the new rules and correctly superseded exactly the one stale node whose content had actually gone wrong, while leaving a related-but-still-accurate node alone. Same real call also exposed and led to fixing a second, older, unrelated bug — `knowledge-map.json` silently rendered every edge as `{}` (a `JSON.stringify` replacer-array misuse dating to M1, only ever visible once a real edge existed to render). Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
+| `pkr update` (incremental) | ✅ built (`packages/core/src/update/`) — diffs the current repo against a persisted file-hash inventory (`.knowledge/inventory.json`, new), re-runs deterministic extraction in full (cheap, no LLM) and merges the result against the stored graph by a per-type natural key (package name / title), reusing node IDs for unchanged facts and reporting a semantic diff (added/modified/removed), not a text diff. Confirmed-node protection verified end-to-end with a real bug found and fixed: the merge path was letting a confirmed node's `confirmed_by` leak onto the merged candidate, which silently defeated `FileNodeStore.upsertNode`'s protection check — now produces a `conflicts_with` edge instead (the first edge this codebase has ever produced). `--llm` re-runs stage 6 and now reconciles against existing inferred knowledge (§19, implemented 2026-08-16, motivated by a real bug found in §16 Run 4): the model is shown current inferred nodes and can mark ones it replaces via `supersedes`; `update/reconcileInferredNodes.ts` turns that into a `conflicts_with` edge (confirmed target — untouched, human resolves) or a `supersedes` edge (non-confirmed target — kept in the store, excluded from the main rendered files into a new `superseded.md`). Real-call validated same day (§19): correctly proposed the new rules and correctly superseded exactly the one stale node whose content had actually gone wrong, while leaving a related-but-still-accurate node alone. Same real call also exposed and led to fixing a second, older, unrelated bug — `knowledge-map.json` silently rendered every edge as `{}` (a `JSON.stringify` replacer-array misuse dating to M1, only ever visible once a real edge existed to render). Excerpt selection for `--llm` now prioritizes files this update's own diff found changed (§21 M7, real-repo-discovered: a genuine 12-commit Kafka feature triggered an update whose 8 excerpt slots all went to unrelated generic-orientation files — zero of the proposed nodes mentioned the feature the update was about; re-run after the fix correctly led with it). The CLI's "modified" diff line no longer collapses to `title → title` when only content or evidence changed (§22, fixed 2026-08-16) — it now reports which of `content`/`evidence` actually moved, keeping `before → after` only for genuine title changes. Real Knowledge Versioning (`PKR_SPEC.md` §7 — `v0.1`→`v0.2`, `pkr commit`) still not built; every render currently reports `knowledge_version: v0.1`. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
-| Automated test suite | ✅ built. `packages/core` (vitest): 94 tests / 16 files, all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 11 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Not yet covered: stage 4 directly (structure.ts). |
+| Automated test suite | ✅ built. `packages/core` (vitest): 105 tests / 16 files (includes 5 covering §20's router mount-prefix resolution, 3 covering its external-services lookup-table fix, and 3 covering §21's changed-file excerpt priority, each reproducing the exact real-repo gap that motivated it), all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 13 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Plus 2 tests added 2026-08-16 (§22) reproducing the `title → title` modified-line bug (an Express route's line shifting without its signature changing, and a `dependency` node's genuine version-bump retitle) — reverting the fix reproduces the exact symptom and fails only the first of those two. Not yet covered: stage 4 directly (structure.ts). |
 | `pkr compare` | ❌ not built |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
@@ -1069,3 +1069,211 @@ consistent with every other retention choice already in this codebase
 `.knowledge/*.jsonl`), but it's the one place someone could reasonably want
 the opposite (a leaner PKR, no history file) and I haven't validated that
 preference either way.
+
+## 20. M6 — first difficult, realistic test: a real, obscure, unfamiliar repo at real scale
+
+Every prior run either used a small (~10-file) synthetic fixture or one real
+repo popular enough to risk training-data contamination (§16 Run 1). Neither
+tests what happens at real scale, on a repo genuinely never seen before.
+Chose `SB2318/ultimatehealth-backend` (3 stars, not a fork, verified via the
+GitHub API before cloning) specifically for size and mess: 125 real source
+files, 30 model files, 21 route files, a real mixed/messy dependency list
+(Express + Mongoose *and* an unused `@prisma/client` leftover, AWS S3,
+Firebase Admin, Kafka, Socket.io, Google Generative AI) — the kind of
+accumulated real-world complexity no fixture built to exercise our own
+regexes would ever produce.
+
+**Confirmed working at scale:** deterministic extraction produced 300 nodes
+(29 of 30 real Mongoose models correctly detected) in well under a second of
+CPU time. No secrets were present in the repo to redact, so the write-gate
+wasn't exercised either way here.
+
+**New finding — real data loss, not cosmetic (found by reading the actual
+mount setup, not by a test failing):** `analyzeApiEndpoints` extracted every
+route file's paths in total isolation, with zero awareness that
+`app.use('/api/gemini', aiRoute)` in the entry point prefixes everything
+inside it. `router.get('/:id', ...)` is an extremely common pattern across
+independently-written route files — on this repo, 4 (method, path) pairs
+were byte-identical across *different* route files mounted at *different*
+real prefixes (`PUT /:id` ×2, `POST /` ×2, `GET /` ×2, `DELETE /:id` ×2).
+The existing (method, path)-only de-dupe key (`extract/interfaces.ts`) kept
+only the first evidence location for each — the second, genuinely distinct,
+real endpoint silently vanished from the PKR. Not hypothetical: verified by
+grepping the raw route files directly and confirming which pairs actually
+collided before touching any code.
+
+**Fixed same session** — single-level router mount-prefix resolution, added
+to `extract/interfaces.ts`: scans every source file for `<app|router>.use(
+'<literal-prefix>', <identifier>)` calls, resolves `<identifier>` back to a
+file via that same file's own `require`/`import` bindings (CommonJS and ES
+module default-import forms both handled), and prepends the resolved prefix
+to every route found in that file. A file with no resolvable mount falls
+back to the old prefix-less behavior unchanged — the fix can only ever add
+information, never remove a route that was already being found, which kept
+all 99 pre-existing tests passing unmodified. Explicitly **not** attempted:
+composing prefixes through multiple layers of nested/re-exported routers
+(a router mounted under a router that's itself mounted elsewhere) — that
+needs transitive graph resolution, a bigger undertaking, and this repo's own
+mounting pattern (every route file mounted directly from the entry point)
+didn't need it to fix the actual bug found.
+
+**Re-ran the real export after the fix:** `api-contracts.md` went from 181
+to 187 endpoints (the 6 that were being silently eaten), and paths that used
+to read as bare, ambiguous `/:id` now read as the real, distinct
+`/api/glossary/:id` / `/api/language/:id` / etc. Specifically re-verified
+all 4 originally-colliding pairs are now two distinct, correctly-prefixed
+nodes each. 5 new tests in `interfaces.test.ts` (the exact collision
+scenario reproduced and fixed; ES-module import resolution; graceful
+fallback with no mount found; not mistaking `app.use(cors(...))` for a
+router mount; a router legitimately mounted under two different prefixes
+emitting two nodes) — each verified by hand to regress into the original
+collision when the fix is reverted.
+
+**Minor finding — fixed same day.** `KNOWN_EXTERNAL_SERVICES`
+(`extract/interfaces.ts`) correctly listed this repo's AWS S3, Firebase
+Admin, and Nodemailer as `external-service` nodes, but missed `kafkajs`,
+`socket.io`, and `@google/generative-ai` — all three were still correctly
+captured as plain `dependency` nodes, just not elevated to the more
+semantic `external-service` type (no information lost, just
+under-classified — deprioritized behind the mount-prefix fix above for that
+reason). Added all three (`"Kafka (via KafkaJS)"`, `"Socket.IO"`,
+`"Google Generative AI (Gemini)"`) to the lookup table. 3 new tests in
+`interfaces.test.ts` — a baseline case (existing entries still resolve), the
+regression case (all three new ones resolve, reverting the addition
+reproduces exactly 2-of-3 going missing again, confirmed by hand — the third
+had been added in a different spot in the table and survived a partial
+revert, which is itself a small useful confirmation that the test was
+actually checking real map contents and not a stale expectation), and an
+unknown-package-name case (no error, empty result).
+
+**What this run does and doesn't prove:** real, positive evidence that the
+deterministic layer holds up on a genuinely messy, unfamiliar, real-scale
+repo — and that testing at real difficulty finds real bugs a clean fixture
+never would (the mount-prefix bug specifically requires *multiple*
+independently-written route files sharing a path, which no single
+hand-built fixture in this project had ever exercised). Did not re-run
+stage 6 after the extraction fix on this specific repo (would cost another
+real call for marginal additional signal beyond what §16 Run 3/Run 5 already
+established about stage 6 quality) — the fix and its evidence are entirely
+in the deterministic layer, verified directly by inspecting the rendered
+output, not by trusting a model's summary of it.
+
+## 21. M7 — `pkr update --llm` against real, unscripted git history
+
+Every prior `pkr update --llm` run (§16 Run 4, §19's real-call validation)
+used code changes I wrote myself to exercise a specific mechanism. Never
+once tested against a genuine, organic commit sequence nobody scripted for
+this project's benefit — the actual real-world shape of "an agent or
+developer did real work, now sync." Re-used the same `ultimatehealth-backend`
+repo from M6, this time cloned with full history: `pkr export` at a real
+commit (`72b2199`), then `git checkout` 12 real commits forward to the
+actual tip of the repo's `main` branch (`7fa2299`, timestamped literally
+hours before this test — the repo was under active real development *during
+this session*), then `pkr update --llm`. Those 12 commits were a genuine
+feature: introducing a Kafka producer/consumer event system (dead-letter
+queue, analytics/notification/email consumers, `docker-compose.yml`
+changes) — 23 real changed files, found via `git diff --name-only` between
+the two commits, not curated for this test.
+
+**Deterministic layer: correct, unremarkable.** `+11 ~13` files detected
+correctly; zero new deterministic facts (no new routes/models in the changed
+files — genuinely correct, these commits added service/infra code, not new
+API surface).
+
+**Stage 6: the update completely missed the actual point of the update.**
+The 12 commits were unambiguously *about* the new Kafka architecture. None
+of the 7 nodes stage 6 proposed mentioned it. Root cause, confirmed by
+reading the code rather than guessing: `buildExcerpts()` reruns the exact
+same generic "orient a stranger to this whole repo" selection
+(README/docs/API-evidence/entry-points/largest-file) on every `pkr update`
+call, with **zero awareness of the file diff that triggered the call in the
+first place** — `synthesizeProductAndBehavior` was never even given the
+changed-file list to begin with. On a repo already large enough to blow past
+`MAX_EXCERPT_FILES(8)` on its general-orientation files alone (M6 already
+showed 58% weakly-grounded at this repo's scale), none of the 23 genuinely
+relevant files ever had a chance to be selected.
+
+**Fixed same session.** `synthesizeProductAndBehavior` gains a `changedFiles`
+parameter (defaults to `[]` — nothing has "changed" on a first `pkr
+export`); `update/index.ts` passes `[...fileDiff.added, ...fileDiff.modified]`.
+`buildExcerpts()` tries these *first*, sorted by size (same "biggest file
+= probably the real logic" heuristic as the existing size-based fallback),
+deliberately ahead of README/docs — an update call already gets project
+orientation from the `<observed_facts>`/`<existing_knowledge>` blocks, so
+the excerpt budget is better spent on what's actually new. 3 new tests in
+`synthesize.test.ts` (priority wins under a full budget; without
+`changedFiles` the same small file loses to the size fallback, confirming
+this is genuinely additive not a general size-rule change; a stale changed-
+path that no longer exists is ignored, not an error) — reverting reproduces
+the exact real symptom (the file is excluded again), confirmed by hand.
+
+**Re-ran the exact same real call after the fix, same two commits, same
+model:** the *first* proposed node was `REQ-INFRA-001`, *"Event-driven
+architecture via Kafka for emails, analytics, and notifications"* — the
+actual point of the update. 14 nodes total (up from 7), most of the rest
+correctly describing real business rules from the *other* files this diff
+also touched (several controllers were modified to wire up the new Kafka
+publishing) — not just "found Kafka," but a broader, correct improvement:
+prioritizing what genuinely changed surfaced real logic across the board,
+not one narrow topic.
+
+**Second, smaller finding from the same run, fixed 2026-08-16 (§22):** the
+CLI's "modified" diff lines print `before.title → after.title`
+(`update/index.ts`/`packages/cli/src/index.ts`). When a fact's *content*
+changes but its title doesn't (very common — e.g. `ARCH-STRUCT-007`
+"services/" component's file count changed after 11 new files landed in
+it), the line reads `services/ → services/`: technically accurate, tells a
+human reading the diff nothing about what actually changed. A real,
+observed UX gap, not hypothetical — deprioritized behind the excerpt-
+priority fix above (that one was silently missing the entire point of an
+update; this one is a diff that's honest but unhelpfully terse).
+
+**What this run does and doesn't prove:** the clearest evidence yet that
+this session's discipline — test against real, unscripted conditions, not
+just fixtures built to exercise known code paths — keeps finding bugs that
+fixtures structurally cannot, because a fixture is, by construction, never
+bigger or messier than whatever it was built to test. Every real-repo run
+this session (§16 M3, §20 M6, this one) has found something a synthetic
+fixture didn't, and each was in a different subsystem (extraction,
+rendering, excerpt selection twice). Not a coincidence to keep expecting:
+the fixtures this project's own test suite uses are necessarily bounded by
+what was already known to matter when they were written.
+
+## 22. Fix: `pkr update`'s "modified" line reports what actually changed
+
+Closes the §21 finding above. `mergeDeterministicNodes`'s `contentEquivalent`
+check (`update/mergeNodes.ts`) already guarantees a node only lands in
+`report.modified` when at least one of `title`/`content`/`evidence` genuinely
+differs — the CLI just wasn't looking past `title`. New
+`describeNodeModification(before, after)` in `packages/cli/src/index.ts`:
+if the title itself changed, keeps the familiar `before → after` (still the
+clearest form for that case — e.g. a `dependency` node's version-range
+title); otherwise reports which of `content`/`evidence` changed, e.g.
+`services/ (content changed)` or `GET /status (evidence changed)`.
+
+Two CLI-level regression tests added (`packages/cli/src/index.test.ts`,
+spawning the real compiled binary — same discipline as the rest of that
+suite), each reproducing a real code shape rather than a synthetic diff:
+
+- an Express route whose line number shifts (a comment inserted above it)
+  without its method or path changing — title and content stay identical,
+  only `evidence` (the line number) moves. Confirms the line now reads
+  `GET /status (evidence changed)`, not `GET /status → GET /status`.
+- a `dependency` node's version bump (`express (^4.18.0)` → `express
+  (^4.19.0)`) — a genuine title change (natural-key matching still treats it
+  as the same fact, stripping the version for identity purposes per
+  `naturalKey.ts`). Confirms the `before → after` form is still used here,
+  so the fix doesn't regress the one case where an identical-looking title
+  pair would actually be wrong to suppress.
+
+Verified by hand: reverting `describeNodeModification`'s call site back to
+`before.title → after.title` reproduces the exact `GET /status → GET
+/status` symptom and fails exactly that one test — the title-change test
+still passes unchanged, confirming it wasn't accidentally the same
+assertion in disguise. Full suite: 105 core + 13 CLI = 118 tests, all
+passing.
+
+No other render path had the same bug — `render.ts`'s `superseded.md` and
+stage 6's `superseded`/`conflicts` CLI output already print the old and new
+node's titles as two separate, clearly-labeled lines rather than diffing
+them into one, so they were never at risk of collapsing to `X → X`.

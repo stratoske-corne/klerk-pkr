@@ -210,6 +210,99 @@ function detectNextFileRoutes(root: string, files: string[]): ApiHit[] {
   return hits;
 }
 
+// ---------------------------------------------------------------------------
+// Router mount-prefix resolution — ARCHITECTURE.md §16/§20 (M6 real-repo find):
+// a route file's `.get('/x', ...)` calls only ever captured the path literal
+// *inside that one file*, with zero awareness that `app.use('/api/gemini',
+// aiRoute)` elsewhere prefixes every route in it. On a real, well-organized
+// Express app (many route files, each mounted under its own prefix in the
+// entry point), that's not cosmetic: two different real routers using the
+// same relative path (`router.get('/:id', ...)` is an extremely common
+// pattern) collide under the OLD (method, path)-only de-dupe key below, and
+// the de-dupe silently drops one — actual data loss, not just an ambiguous
+// label. Confirmed on a real 125-file repo before this was written: 4
+// (method, path) collisions across different route files, all real,
+// distinct endpoints.
+//
+// Single-level only: resolves `<app|router>.use('<prefix>', <ident>)` where
+// `<ident>` is bound via a same-file `require`/`import` to a route file
+// already in the inventory. Does NOT compose prefixes through multiple
+// layers of re-exported/nested routers (a router mounted under a router
+// that's itself mounted elsewhere) — that needs transitive graph resolution,
+// out of scope here; falls back to the old prefix-less behavior for any file
+// this can't resolve, so it can only ever add information, never remove any
+// route that was already being found.
+// ---------------------------------------------------------------------------
+
+const IMPORT_BINDING_RE =
+  /\b(?:const|let|var)\s+([\w$]+)\s*=\s*require\(\s*(['"`])(\.[^'"`]*)\2\s*\)|\bimport\s+([\w$]+)\s+from\s+(['"`])(\.[^'"`]*)\5/g;
+const MOUNT_USE_RE = /\b(?:app|router)\s*\.\s*use\s*\(\s*(['"`])((?:\\.|(?!\1).)*)\1\s*,\s*([\w$]+)\s*\)/g;
+
+/** Resolves a relative import specifier (from `fromFile`) to a real inventory path, trying extension-less/`.js`/`.ts`/index-file variants — no `--target` info available, so all plausible extensions are tried. */
+function resolveImportPath(fromFile: string, importPath: string, knownPaths: Set<string>): string | null {
+  const baseDir = path.dirname(fromFile);
+  const raw = path.normalize(path.join(baseDir, importPath)).split(path.sep).join("/");
+  for (const candidate of [raw, `${raw}.js`, `${raw}.ts`, `${raw}/index.js`, `${raw}/index.ts`]) {
+    if (knownPaths.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** File path -> mount prefix(es) it's registered under, resolved as described above. */
+function buildMountPrefixMap(root: string, files: string[]): Map<string, string[]> {
+  const knownPaths = new Set(files);
+  const map = new Map<string, string[]>();
+
+  for (const rel of files) {
+    const content = readSafe(root, rel);
+    if (!content) continue;
+
+    const localImports = new Map<string, string>(); // identifier -> resolved file path, scoped to this one file
+    IMPORT_BINDING_RE.lastIndex = 0;
+    let im: RegExpExecArray | null;
+    while ((im = IMPORT_BINDING_RE.exec(content)) !== null) {
+      const ident = im[1] ?? im[4];
+      const importPath = im[3] ?? im[6];
+      const resolved = resolveImportPath(rel, importPath, knownPaths);
+      if (resolved) localImports.set(ident, resolved);
+    }
+    if (localImports.size === 0) continue;
+
+    MOUNT_USE_RE.lastIndex = 0;
+    let mm: RegExpExecArray | null;
+    while ((mm = MOUNT_USE_RE.exec(content)) !== null) {
+      const target = localImports.get(mm[3]);
+      if (!target) continue; // second arg isn't something we traced back to a file — likely inline middleware, not a router; safe to skip
+      const prefix = mm[2];
+      if (!map.has(target)) map.set(target, []);
+      if (!map.get(target)!.includes(prefix)) map.get(target)!.push(prefix);
+    }
+  }
+
+  return map;
+}
+
+function joinRoutePath(prefix: string, routePath: string): string {
+  const combined = `${prefix}${routePath}`.replace(/\/{2,}/g, "/");
+  return combined.length > 1 && combined.endsWith("/") ? combined.slice(0, -1) : combined;
+}
+
+/** Applies resolved mount prefixes to Express-style hits; a file with no resolvable prefix is passed through unchanged (old behavior). A file mounted under more than one prefix produces one hit per prefix — it really is reachable at each. */
+function applyMountPrefixes(hits: ApiHit[], mountPrefixes: Map<string, string[]>): ApiHit[] {
+  const resolved: ApiHit[] = [];
+  for (const hit of hits) {
+    const prefixes = mountPrefixes.get(hit.file);
+    if (!prefixes || prefixes.length === 0) {
+      resolved.push(hit);
+      continue;
+    }
+    for (const prefix of prefixes) {
+      resolved.push({ ...hit, routePath: joinRoutePath(prefix, hit.routePath) });
+    }
+  }
+  return resolved;
+}
+
 export function analyzeApiEndpoints(
   root: string,
   inventory: Inventory,
@@ -217,11 +310,12 @@ export function analyzeApiEndpoints(
   projectId: string,
 ): KnowledgeNode[] {
   const sourceFiles = inventory.files.filter((f) => f.kind === "source").map((f) => f.path);
-  const hits = [
-    ...detectExpressStyleRoutes(root, sourceFiles),
-    ...detectChainedRoutes(root, sourceFiles),
-    ...detectNextFileRoutes(root, sourceFiles),
-  ];
+
+  const expressHits = applyMountPrefixes(
+    [...detectExpressStyleRoutes(root, sourceFiles), ...detectChainedRoutes(root, sourceFiles)],
+    buildMountPrefixMap(root, sourceFiles),
+  );
+  const hits = [...expressHits, ...detectNextFileRoutes(root, sourceFiles)];
   if (hits.length === 0) return [];
 
   // De-dupe identical (method, path) pairs; keep first evidence location.
@@ -439,6 +533,12 @@ export function analyzeDatabaseSchema(
 // External services — derived from dependency names stage 2 already extracted
 // ---------------------------------------------------------------------------
 
+// ARCHITECTURE.md §20 — kafkajs/socket.io/@google/generative-ai were missing
+// from this table, found on a real repo that used all three: the packages
+// were still correctly listed as plain `dependency` nodes, just never
+// elevated to the more semantic `external-service` type. Low severity (no
+// information lost, just under-classified) but a real, concrete gap, not
+// hypothetical — added below rather than left as a known-but-unfixed item.
 const KNOWN_EXTERNAL_SERVICES: Record<string, string> = {
   stripe: "Stripe",
   "aws-sdk": "AWS SDK",
@@ -447,6 +547,7 @@ const KNOWN_EXTERNAL_SERVICES: Record<string, string> = {
   "@sendgrid/mail": "SendGrid",
   openai: "OpenAI API",
   "@anthropic-ai/sdk": "Anthropic API",
+  "@google/generative-ai": "Google Generative AI (Gemini)",
   googleapis: "Google APIs",
   "firebase-admin": "Firebase Admin",
   mongodb: "MongoDB",
@@ -459,6 +560,8 @@ const KNOWN_EXTERNAL_SERVICES: Record<string, string> = {
   "@slack/web-api": "Slack API",
   algoliasearch: "Algolia",
   "@sentry/node": "Sentry",
+  kafkajs: "Kafka (via KafkaJS)",
+  "socket.io": "Socket.IO",
 };
 
 export function analyzeExternalServices(

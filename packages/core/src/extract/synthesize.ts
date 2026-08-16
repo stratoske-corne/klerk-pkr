@@ -155,11 +155,45 @@ function readSafe(root: string, relPath: string, maxChars: number): string | nul
 
 const ENTRY_POINT_RE = /(^|\/)(src\/)?(index|main|app|server)\.(ts|tsx|js|jsx)$/;
 
-function buildExcerpts(root: string, inventory: Inventory, observedNodes: KnowledgeNode[]): Array<{ path: string; content: string }> {
+/**
+ * `priorityFiles` (`pkr update` only — empty on `pkr export`, nothing has
+ * "just changed" on a first export) are files the current `pkr update` run's
+ * own inventory diff (added + modified) already knows are relevant. Found
+ * missing on a real repo (ARCHITECTURE.md §20 M7): a genuine, organic
+ * 12-commit feature (introducing a whole Kafka producer/consumer event
+ * system, 23 real changed files) triggered `pkr update --llm`, and not one
+ * of the 8 excerpt slots went to any of those 23 files — the selection
+ * heuristic re-ran its generic "orient a stranger to this whole repo" logic
+ * every time, blind to the fact that an update call already knows exactly
+ * which files the reconciliation is *about*. Result: zero of the 7 proposed
+ * nodes mentioned the feature the update was actually triggered by. Given
+ * top priority here, sorted by size (same "biggest file = likely the real
+ * logic" heuristic as the size-based fallback below) — deliberately ahead of
+ * README/docs, since an update call already gets orientation from the
+ * `<observed_facts>`/`<existing_knowledge>` blocks synthesizeProductAndBehavior
+ * builds separately; the excerpt budget is better spent on what's new.
+ */
+function buildExcerpts(
+  root: string,
+  inventory: Inventory,
+  observedNodes: KnowledgeNode[],
+  priorityFiles: string[] = [],
+): Array<{ path: string; content: string }> {
   const candidates: string[] = [];
   const add = (p: string) => {
     if (!candidates.includes(p)) candidates.push(p);
   };
+
+  // 0. Files this call's own inventory diff already knows changed — see doc above.
+  const byPath = new Map(inventory.files.map((f) => [f.path, f]));
+  const changedExisting = priorityFiles
+    .map((p) => byPath.get(p))
+    .filter((f): f is Inventory["files"][number] => f !== undefined)
+    .sort((a, b) => b.sizeBytes - a.sizeBytes);
+  for (const f of changedExisting) {
+    if (candidates.length >= MAX_EXCERPT_FILES) break;
+    add(f.path);
+  }
 
   // 1. README first if one exists, at the root or in any top-level package.
   const readme = inventory.files.find((f) => /^readme\.(md|mdx|txt)?$/i.test(path.basename(f.path)));
@@ -295,8 +329,10 @@ export async function synthesizeProductAndBehavior(
   llm: LlmClient,
   /** Current inferred nodes, for `pkr update --llm` reconciliation (ARCHITECTURE.md §19). Defaults to `[]` — `pkr export` has nothing to reconcile against yet, and passing nothing omits the `<existing_knowledge>` block entirely rather than sending an empty one. */
   existingInferredNodes: KnowledgeNode[] = [],
+  /** Files this `pkr update` run's own inventory diff found added/modified — given top excerpt priority (ARCHITECTURE.md §20 M7). Defaults to `[]` on `pkr export` (nothing has "changed" on a first export). */
+  changedFiles: string[] = [],
 ): Promise<SynthesisResult> {
-  const excerpts = buildExcerpts(root, inventory, observedNodes);
+  const excerpts = buildExcerpts(root, inventory, observedNodes, changedFiles);
 
   // Evidence verification checks against exactly what the model was actually
   // shown — not the whole repo inventory (ARCHITECTURE.md §16 Run 3: the old

@@ -125,3 +125,57 @@ describe("pkr CLI — real happy-path smoke test (no LLM, no network)", () => {
     expect(fs.existsSync(path.join(dir, ".projectknowledge", "manifest.yaml"))).toBe(true);
   });
 });
+
+describe("pkr CLI — `update`'s modified-node line (REGRESSION, ARCHITECTURE.md §21)", () => {
+  // A node's title only embeds what an extractor puts in it (e.g. an
+  // api-endpoint's "METHOD /path") — plenty of real edits change a node's
+  // *content* or *evidence* (line number) without touching its title. The
+  // old `before.title → after.title` line degenerated to `X → X` in exactly
+  // that — the common — case. Reproduced here by shifting an existing
+  // route's line number (a blank line inserted above it) without touching
+  // its method or path.
+  it("reports what actually changed, not `title → title`, when a route's line moves but its signature doesn't", () => {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }, null, 2));
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    // Same method, same path — only the line it's declared on moves.
+    fs.writeFileSync(
+      dir + "/src/app.js",
+      "const app = require('express')();\n\n// unrelated comment inserted above the route\napp.get('/status', (req, res) => res.send('ok'));\n",
+    );
+
+    const { stdout, status } = runCli(["update", dir]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("~ ");
+    expect(stdout).toContain("GET /status (evidence changed)");
+    expect(stdout).not.toContain("GET /status → GET /status");
+  });
+
+  it("still shows `before → after` when the title itself changed", () => {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "src", "index.js"), "console.log('hi');\n");
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "fixture", version: "1.0.0", dependencies: { express: "^4.18.0" } }, null, 2),
+    );
+
+    expect(runCli(["export", dir]).status).toBe(0);
+
+    // A `dependency` node's title embeds the version range ("express
+    // (^4.18.0)"); naturalKey strips it back to the package name for
+    // matching, so this is still one continuous fact, genuinely retitled.
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "fixture", version: "1.0.0", dependencies: { express: "^4.19.0" } }, null, 2),
+    );
+
+    const { stdout, status } = runCli(["update", dir]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("express (^4.18.0) → express (^4.19.0)");
+  });
+});

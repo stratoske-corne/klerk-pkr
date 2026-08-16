@@ -1,9 +1,25 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import * as path from "node:path";
-import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, type ContextTarget } from "@klerk/core";
+import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, type ContextTarget, type KnowledgeNode } from "@klerk/core";
 
 const program = new Command();
+
+/**
+ * `pkr update`'s "modified" line used to always print `title → title`,
+ * which told a human nothing when a file changed but the extracted title
+ * didn't move (the common case — most edits touch content or evidence, not
+ * the title). `mergeDeterministicNodes`'s `contentEquivalent` check
+ * guarantees at least one of title/content/evidence actually differs
+ * whenever a node lands in `modified`, so report whichever it actually was.
+ */
+function describeNodeModification(before: KnowledgeNode, after: KnowledgeNode): string {
+  if (before.title !== after.title) return `${before.title} → ${after.title}`;
+  const changed: string[] = [];
+  if (before.content !== after.content) changed.push("content");
+  if (JSON.stringify(before.evidence) !== JSON.stringify(after.evidence)) changed.push("evidence");
+  return `${after.title} (${changed.join(", ")} changed)`;
+}
 
 program
   .name("pkr")
@@ -174,7 +190,7 @@ program
       console.log("  No fact-level changes (changed files didn't affect any extracted knowledge).");
     }
     for (const n of merge.added) console.log(`  + ${n.id}  ${n.title}`);
-    for (const { before, after } of merge.modified) console.log(`  ~ ${after.id}  ${before.title} → ${after.title}`);
+    for (const { before, after } of merge.modified) console.log(`  ~ ${after.id}  ${describeNodeModification(before, after)}`);
     for (const n of merge.removed) console.log(`  - ${n.id}  ${n.title}`);
     for (const { existing } of merge.conflicts) {
       console.log(`  ! ${existing.id}  "${existing.title}" is confirmed but extraction now disagrees — needs manual review`);

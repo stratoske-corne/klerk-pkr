@@ -145,6 +145,11 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
       const storeNodes = store.listNodes();
       const deterministicNodes = storeNodes.filter((n) => n.status !== "inferred");
       const existingInferredNodes = storeNodes.filter((n) => n.status === "inferred");
+      // ARCHITECTURE.md §20 M7 — give stage 6 top excerpt priority over
+      // exactly the files this update is actually about, instead of letting
+      // it re-run a generic "orient a stranger" selection blind to what the
+      // diff already knows changed.
+      const changedFiles = [...fileDiff.added, ...fileDiff.modified];
 
       const result = await synthesizeProductAndBehavior(
         repoRoot,
@@ -156,6 +161,7 @@ export async function runUpdate(options: UpdateOptions): Promise<UpdateResult> {
         allocator,
         options.llm,
         existingInferredNodes,
+        changedFiles,
       );
       for (const node of result.nodes) store.upsertNode(node);
       const reconcile = reconcileInferredNodes(store, projectId, result.nodes, result.supersedesClaims);
