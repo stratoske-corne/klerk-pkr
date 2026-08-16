@@ -26,3 +26,4 @@ export * from "./update/diffInventory.js";
 export * from "./update/mergeNodes.js";
 export * from "./update/reconcileInferredNodes.js";
 export * from "./update/index.js";
+export * from "./compare/index.js";

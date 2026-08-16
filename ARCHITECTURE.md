@@ -24,7 +24,7 @@ Kept current as code lands, so this document doesn't drift from reality.
 | `pkr diff <from> [to]` | ✅ built (§24, 2026-08-16) — a `git log from..to`-style range over committed versions (aggregates every `changed_nodes` entry from every version strictly after `from` up to and including `to`), not a computed before/after content diff. `to` defaults to the latest version. Only supports a straight ancestor chain (no branching in this data model) — a reversed or unrelated range fails cleanly with a hint rather than silently walking the wrong chain. |
 | `pkr reconstruct` (M2) | ✅ built (`packages/core/src/reconstruct/`) — loads a `.projectknowledge/` dir (internal `.knowledge/*.jsonl` store, or a markdown-fallback parser when that store isn't present — PKR_SPEC.md §8 portability, verified byte-identical output both ways), computes a phase-order build order (currently pure phase-order — no edges exist yet to topo-sort within a phase), and renders `.reconstruction/{SYSTEM_PROMPT,BUILD_ORDER,CONSTRAINTS,ACCEPTANCE_TESTS,CONTEXT,KNOWN_AMBIGUITIES}.md`. No LLM call. `ACCEPTANCE_TESTS.md` now pulls real `npm run build`/`test` commands (stage 2 extracts them from `package.json` scripts) plus expected endpoints/tables straight from extracted nodes. |
 | Automated test suite | ✅ built. `packages/core` (vitest): 105 tests / 16 files (includes 5 covering §20's router mount-prefix resolution, 3 covering its external-services lookup-table fix, and 3 covering §21's changed-file excerpt priority, each reproducing the exact real-repo gap that motivated it), all deterministic (no network, no LLM, tmpdir-isolated fixtures — nothing touches the real repo tree). Covers: node-factory's schema-boundary enforcement (status/confidence/evidence rules), `IdAllocator` sequencing and 4-digit rollover, `FileNodeStore`'s confirmed-node protection (upsert + delete), the secret write-gate, `computeAchievableLevel`'s threshold behavior (including level 4 now being a genuinely reachable, distinct output), `naturalKey`/`diffInventory`, `pkr update --llm`'s failure-doesn't-forfeit-a-retry behavior, stage 3's route/schema detectors (`extract/interfaces.ts` — including the two M3-fixed gaps below), stage 6's excerpt-selection heuristic, evidence-grounding tiers, and §19 reconciliation (`extract/synthesize.ts` — via a no-op/fake LLM so these run free), `update/reconcileInferredNodes.ts`'s confirmed/non-confirmed split, and `supersede.ts`'s exclusion logic exercised across all three render paths (`render.ts`'s `superseded.md`, `pkr context`, `pkr reconstruct` — each with its own regression test reproducing the literal $500-next-to-$1,000 contradiction), `pkr context`'s staleness check (including the `.context`-counts-as-its-own-drift regression below), and — the highest-value additions — a `mergeNodes` regression test that reintroduces the confirmed-node-leak bug found this session and confirms it's caught (verified by hand: reverting the fix makes exactly those 2 tests fail, nothing else), a full `pkr export` → `pkr update` integration test (no-op, real change, confirmed-conflict, and the §19/Run-4 reconciliation scenario end-to-end), and a `loadPkr` jsonl-vs-markdown-fallback parity test. `packages/cli` (vitest, added 2026-08-16): 13 tests, spawns the real compiled `bin/pkr.js` as a subprocess — the one surface the core-level tests never touch. Found by actually running the CLI the way a first-time user would (bad paths, no PKR yet, typos): every single error case crashed with a raw, uncaught Node.js stack trace pointing into compiled `dist/` files instead of the clean, already-well-written `Error` message underneath — `program.parseAsync(...)` had no top-level `.catch()`, so any action handler's rejection reached the runtime uncaught. Fixed with one central handler (clean `Error: <message>`, `process.exitCode = 1`, full stack still available behind `PKR_DEBUG=1`) rather than wrapping each of the 4 commands' actions individually — same "fix it where it actually reaches the user, once, consistently" lesson as the superseded-node fix above. Regression-tested (reverting reproduces the exact crash-with-stack-trace symptom for all 4 commands, confirmed by hand) alongside baseline commander-dispatch coverage and a real end-to-end `export`/`init` happy-path smoke test. Plus 2 tests added 2026-08-16 (§22) reproducing the `title → title` modified-line bug (an Express route's line shifting without its signature changing, and a `dependency` node's genuine version-bump retitle) — reverting the fix reproduces the exact symptom and fails only the first of those two. Plus 3 tests added 2026-08-16 (§23) reproducing the secret write-gate's `\b`-boundary gap. Plus 11 tests added 2026-08-16 (§24 Knowledge Versioning): 8 unit tests on `versions.ts` (`packages/core`), 3 end-to-end integration tests (`update/index.integration.test.ts` — export commits v0.1, a no-op commits nothing, a real change commits v0.2 chained to v0.1 with the manifest reflecting it), and 4 CLI-level tests (`packages/cli` — export reports v0.1, `pkr log` shows it newest-first, a real update bumps to v0.2, a no-op update stays at v0.1, plus the clean-error case for `pkr log` with no PKR); the empty-changed-nodes guard was verified by hand (reverting it turns the one dedicated "writes nothing" unit test red, nothing else). Plus 11 more tests added the same day for `pkr diff` (§24): 6 unit (`versions.ts` — range aggregation, `to`-defaulting, identical-versions no-op, reversed-range/unknown-version errors, empty-store error) and 5 CLI (`packages/cli`, including both error cases end-to-end); the ancestor-chain guard was verified by hand (disabling it turns exactly the reversed-range test red, nothing else). `packages/core` total now 125 tests / 17 files; **147 across both packages** (`packages/cli`: 22 tests). Not yet covered: stage 4 directly (structure.ts). |
-| `pkr compare` | ❌ not built |
+| `pkr compare` | ✅ built (§25, 2026-08-16), MVP scope — `packages/core/src/compare/`. Compares an original PKR against a candidate reconstruction repo: API/schema compatibility (measured, name-set diffs), architecture similarity (heuristic, Jaccard over component names), build/test success (measured, opt-in via `--run-build` — the only subprocess call in this codebase that runs code from something other than this tool itself). Every row explicitly labeled measured/heuristic/not-measurable, overall score is a printed equal-weighted average, never a black box. Deferred: shape/column-level schema diff, black-box contract-test execution of the original's suite against the reconstruction, compound "behavioral similarity". |
 | Hosted platform (M6+) | ❌ not built, by design (§7) |
 
 Validated end-to-end against: this repo, `packages/core` standalone, a cloned copy
@@ -1508,3 +1508,82 @@ The draft/commit review step (PKR_SPEC.md §7's actual full design) and a
 real `pkr commit`/`pkr confirm`/`pkr edit` human-correction workflow. Not
 abandoned — §7's spec text still describes the target shape — scoped out
 of this slice for the reason above, not overlooked.
+
+## 25. `pkr compare` — MVP scope (2026-08-16)
+
+The full §5 table specs six dimensions, two of which are structurally
+bigger than a single slice: "test compatibility" as originally scoped means
+running the *original's* test suite against the reconstruction, which
+needs contract-test detection (which black-box tests even apply across two
+different codebases?) that doesn't exist; "behavioral similarity" is an
+explicit rollup of everything else, better built once the rows under it are
+validated against something real. Both deferred outright, not faked.
+
+### What ships
+
+- **`compare/index.ts`** (new): `runCompare({originalPkrDir,
+  reconstructionRepoDir, runBuild?})`. Loads the original via the existing
+  `loadPkr()` (jsonl-or-markdown-fallback, same loader `pkr reconstruct`
+  already uses); runs a *fresh* deterministic extraction pass against the
+  reconstruction repo using the same extractors as everywhere else
+  (`analyzeApiEndpoints`, `analyzeDatabaseSchema`, `analyzeStructure`) —
+  same "re-extract with a throwaway scratch allocator" pattern `pkr
+  update` already established, nothing new invented for comparison
+  specifically.
+- **API / schema compatibility** (measured): a name-set diff — original's
+  `api-endpoint`/`db-table` node titles vs. the reconstruction's freshly
+  extracted ones. Score = matched / original size; missing and extra items
+  both listed. Deliberately name-level only, not shape/column-level — that
+  would mean parsing structured detail back out of free-text `content`
+  (fragile), a real simplification, stated as one, not silently assumed
+  precise.
+- **Architecture similarity** (heuristic, always labeled as such): Jaccard
+  similarity of `component` node title sets (directory-derived, from
+  `structure.ts`).
+- **Build / test success** (measured, may be not-measurable, opt-in): the
+  only genuinely new category of capability in this codebase — actually
+  executing `npm run build`/`npm test` inside the reconstruction directory
+  via `execFileSync`. Every other subprocess call anywhere in this project
+  is a fixed `git rev-parse HEAD`; this is the first time pkr runs code
+  that isn't itself. Gated behind `--run-build` (default off) specifically
+  because of that — the CLI says exactly why when it's skipped, rather than
+  silently omitting the row. When the original has no `build`/`test` script
+  at all, the row is `not-measurable` regardless of the flag — there's
+  nothing to compare against. `npm run <script>` is always literal, never a
+  string assembled from repo content — the script *name* ("build"/"test")
+  is the only variable, and it's one of two fixed literals, not a
+  dynamically constructed command — so there's no command-injection surface
+  beyond what `npm run build` on an untrusted repo already inherently is.
+  `timeout: 120_000` so a hung build can't hang `pkr compare` forever.
+- **Overall score**: equal-weighted average across every row that actually
+  got a score (not-measurable rows excluded from both the average and the
+  weights) — and the weights are printed in the CLI output alongside the
+  score, never implied.
+
+### Verified live against a real fixture (not just unit tests)
+
+A 2-endpoint original vs. a reconstruction missing one endpoint and adding
+an unrelated one, via the actual compiled CLI: correctly reported `1/2
+reproduced, 1 extra` with both named; architecture similarity at 100%
+(same single top-level directory on both sides, correctly heuristic-labeled
+regardless); build skipped by default with the exact `--run-build` hint;
+re-run with `--run-build` against a reconstruction whose build script
+deliberately exits 1 correctly reported `Build success [measured] 0%` with
+real captured npm output, and the overall score/weights recomputed to
+include it once it became measurable.
+
+### Testing
+
+10 unit tests (`compare/index.test.ts`, `packages/core`) — perfect match,
+partial match with missing/extra detail, not-measurable when the original
+has no endpoints, architecture always heuristic, build skipped by default
+with the right message, build not-measurable with no build script even
+under `--run-build`, build actually executed and reporting both success and
+failure with output detail, equal-weighted overall score computed only over
+scored rows, and a clean error for a nonexistent reconstruction path. The
+not-measurable guard was verified by hand (disabling it turns exactly the
+one dedicated test red, nothing else). 4 CLI-level tests (`packages/cli`,
+spawning the real compiled binary) covering the labeled-rows-plus-score
+happy path, the build-skipped-by-default message, and both "nonexistent
+reconstruction path" / "nonexistent original PKR" clean-error cases.
+`packages/core`: 135 tests / 18 files. Both packages: **161 tests**.

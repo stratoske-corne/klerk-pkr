@@ -292,3 +292,59 @@ describe("pkr CLI — diff (ARCHITECTURE.md §24)", () => {
     expect(stdout + stderr).not.toMatch(/at \S+ \(/);
   });
 });
+
+describe("pkr CLI — compare (ARCHITECTURE.md §25)", () => {
+  function routeFixture(routes: string[]): string {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, "src"));
+    const routeLines = routes.map((r) => `app.get('${r}', (req, res) => res.send('ok'));`).join("\n");
+    fs.writeFileSync(path.join(dir, "src", "app.js"), `const app = require('express')();\n${routeLines}\n`);
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }, null, 2));
+    return dir;
+  }
+
+  it("reports a perfect match with labeled rows and an overall score", () => {
+    const originalRepo = routeFixture(["/status", "/health"]);
+    expect(runCli(["export", originalRepo]).status).toBe(0);
+    const reconRepo = routeFixture(["/status", "/health"]);
+
+    const { stdout, status } = runCli(["compare", path.join(originalRepo, ".projectknowledge"), reconRepo]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("API compatibility [measured]");
+    expect(stdout).toContain("2/2 reproduced");
+    expect(stdout).toContain("Architecture similarity [heuristic]");
+    expect(stdout).toContain("Overall reconstruction score:");
+  });
+
+  it("does not execute the build by default, and explains how to opt in", () => {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "src", "app.js"), "const app = require('express')();\napp.get('/status', (req, res) => res.send('ok'));\n");
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { build: "tsc" } }, null, 2));
+    expect(runCli(["export", dir]).status).toBe(0);
+    const reconRepo = routeFixture(["/status"]);
+
+    const { stdout, status } = runCli(["compare", path.join(dir, ".projectknowledge"), reconRepo]);
+    expect(status).toBe(0);
+    expect(stdout).toContain("Build success [not measurable]");
+    expect(stdout).toContain("--run-build");
+  });
+
+  it("a nonexistent reconstruction path fails cleanly, not a stack trace", () => {
+    const originalRepo = routeFixture(["/status"]);
+    expect(runCli(["export", originalRepo]).status).toBe(0);
+
+    const { stdout, stderr, status } = runCli(["compare", path.join(originalRepo, ".projectknowledge"), "/this/path/does/not/exist"]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("Error: Not a directory");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+
+  it("a nonexistent original PKR fails cleanly, not a stack trace", () => {
+    const reconRepo = routeFixture(["/status"]);
+    const { stdout, stderr, status } = runCli(["compare", "/this/path/does/not/exist", reconRepo]);
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain("Not a Project Knowledge Repository");
+    expect(stdout + stderr).not.toMatch(/at \S+ \(/);
+  });
+});

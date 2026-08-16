@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, diffVersions, summarizeChanges, type ContextTarget, type KnowledgeNode } from "@klerk/core";
+import { runExport, tryCreateDefaultLlmClient, AnthropicLlmClient, runReconstruct, runContext, runUpdate, listVersions, diffVersions, summarizeChanges, runCompare, type ContextTarget, type KnowledgeNode } from "@klerk/core";
 
 const program = new Command();
 
@@ -293,6 +293,40 @@ program
     }
     console.log("");
     console.log(`Summary: ${summarizeChanges(result.entries)}`);
+  });
+
+program
+  .command("compare")
+  .description("Compare an original PKR against a candidate reconstruction repo (ARCHITECTURE.md §25 / PRODUCT_SPEC.md §5.8). Every row is labeled measured/heuristic/not-measurable — never an unlabeled score.")
+  .argument("<original-pkr-dir>", "path to the original .projectknowledge/ directory")
+  .argument("<reconstruction-repo-dir>", "path to the candidate reconstruction (a real repo, not a PKR)")
+  .option("--run-build", "actually execute the reconstruction's own `npm run build`/`npm test` (default: skipped — this runs real code from the reconstruction repo)")
+  .action((originalPkrDir: string, reconstructionRepoDir: string, opts: { runBuild?: boolean }) => {
+    const resolvedPkrDir = path.resolve(process.cwd(), originalPkrDir);
+    const resolvedReconDir = path.resolve(process.cwd(), reconstructionRepoDir);
+    console.log(`Comparing ${resolvedReconDir}`);
+    console.log(`     against ${resolvedPkrDir} ...`);
+    console.log("");
+
+    const result = runCompare({ originalPkrDir: resolvedPkrDir, reconstructionRepoDir: resolvedReconDir, runBuild: opts.runBuild ?? false });
+
+    for (const row of result.rows) {
+      const tag = row.kind === "measured" ? "[measured]" : row.kind === "heuristic" ? "[heuristic]" : "[not measurable]";
+      const scoreStr = row.score !== null ? `  ${Math.round(row.score * 100)}%` : "";
+      console.log(`${row.dimension} ${tag}${scoreStr}`);
+      console.log(`  ${row.summary}`);
+      for (const d of row.detail ?? []) console.log(`    - ${d}`);
+      console.log("");
+    }
+
+    if (result.overallScore !== null) {
+      const weightsStr = Object.entries(result.weights)
+        .map(([dim, w]) => `${dim}: ${Math.round(w * 100)}%`)
+        .join(", ");
+      console.log(`Overall reconstruction score: ${Math.round(result.overallScore * 100)}% (equal-weighted average of the measurable/heuristic rows above — weights: ${weightsStr})`);
+    } else {
+      console.log("Overall reconstruction score: not computable — no row was measurable.");
+    }
   });
 
 // Every command action above can throw a plain `Error` from core (bad path,
