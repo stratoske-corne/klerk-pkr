@@ -1,6 +1,7 @@
 {
   "name": "@klerk/core",
   "version": "0.1.0",
+  "private": true,
   "description": "Klerk core engine: extraction, knowledge graph, rendering — the shared library behind the pkr CLI.",
   "license": "Elastic-2.0",
   "author": "stratoske",

@@ -1,5 +1,5 @@
 {
-  "name": "klerk",
+  "name": "klerk-monorepo",
   "private": true,
   "version": "0.1.0",
   "description": "Klerk — Portable Project Intelligence. Monorepo root.",
@@ -17,7 +17,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @klerk/core && npm run build -w @klerk/cli",
+    "build": "npm run build -w @klerk/core && npm run build -w klerk",
     "test": "npm run test --workspaces --if-present",
     "pkr": "node packages/cli/bin/pkr.js"
   },

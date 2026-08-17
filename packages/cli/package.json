@@ -1,7 +1,14 @@
 {
-  "name": "@klerk/cli",
+  "name": "klerk",
   "version": "0.1.0",
   "description": "pkr — the Klerk command-line tool. Generates a Project Knowledge Repository (.projectknowledge/) from a local software repository.",
+  "keywords": [
+    "cli",
+    "documentation",
+    "knowledge-graph",
+    "codebase",
+    "ai-agents"
+  ],
   "license": "Elastic-2.0",
   "author": "stratoske",
   "repository": {
@@ -15,19 +22,31 @@
   },
   "type": "module",
   "bin": {
-    "pkr": "./bin/pkr.js"
+    "pkr": "./dist/index.cjs"
   },
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "files": [
+    "dist/index.cjs",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node20 --define:import.meta.url=importMetaUrl --inject:scripts/import-meta-url-shim.js --outfile=dist/index.cjs",
+    "prepack": "cp ../../LICENSE . && npm run bundle",
     "test": "vitest run"
   },
   "dependencies": {
-    "@klerk/core": "0.1.0",
-    "commander": "^12.1.0"
+    "ignore": "^5.3.1"
   },
   "devDependencies": {
+    "@klerk/core": "0.1.0",
     "@types/node": "^20.14.0",
+    "commander": "^12.1.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.5.4",
     "vitest": "^4.1.10"
   }

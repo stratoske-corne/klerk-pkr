@@ -5,3 +5,9 @@ dist/
 
 # Local scratch exports created while testing the CLI against sample repos.
 /tmp-export-test/
+
+# Copied into packages/cli/ by its "prepack" script from the root LICENSE
+# (single source of truth) so it ships inside the published npm tarball.
+/packages/cli/LICENSE
+
+*.tgz

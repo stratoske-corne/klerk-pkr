@@ -2039,3 +2039,100 @@ reproduces a real ~2000ms failure against a ~1145ms budget.
 against the actual real-world reproduction that found it, not a
 synthetic case invented after the fact. `packages/core`: 184 tests / 22
 files. Both packages: **215 tests**.
+
+## 32. Packaging readiness — single-package bundle, license, identity (2026-08-17)
+
+Pre-publish prep, user-driven and explicitly scoped to *readiness* only —
+no `npm publish` has been run; the user has no npm account yet.
+
+**License**: root `LICENSE` is the Elastic License 2.0 (`Elastic-2.0` SPDX
+id in all three `package.json`s) — free use/modify/redistribute, the one
+restriction being offering the software to third parties as a hosted/
+managed service, chosen specifically to protect a possible future hosted
+`klerk` offering (§7's already-planned, still-unbuilt M6+) from being
+undercut by someone else's hosted fork. Category precedent: Sentry,
+CockroachDB.
+
+**Identity**: `author: "stratoske"` (pseudonym, by explicit choice — not a
+real name) and `repository`/`homepage`/`bugs` on all three `package.json`s,
+pointing at a **new dedicated public repo**,
+`github.com/stratoske-corne/klerk-pkr` (the original repo, same account,
+stays private under its original name and is kept as a second git remote,
+`private`, purely as a backup — `origin` now tracks the new public repo).
+
+**The two-npm-package problem and its fix**: `packages/cli` (`@klerk/cli`)
+depended on `packages/core` (`@klerk/core`) as a literal-version npm
+dependency — fine inside the monorepo (npm workspaces symlink it), but
+published as-is it would require `@klerk/core` to *also* be published to
+npm separately, under a real scope, before the user has chosen one.
+Fixed by renaming the publishable package from `@klerk/cli` to the
+unscoped **`klerk`** (verified available on the registry earlier this
+session) and adding an esbuild bundle step (`npm run bundle`, wired as a
+`prepack` script so it always runs before `npm pack`/`npm publish`) that
+inlines all of `@klerk/core`'s compiled output directly into one file,
+`dist/index.cjs` — `@klerk/core` becomes a **build-time-only
+devDependency**, never a published runtime dependency. `packages/core`'s
+own `package.json` gained `"private": true` as a second line of defense
+against ever publishing it directly.
+
+Two real bugs, both found only because the check was a real `npm pack` +
+fresh, isolated `npm install -g` (a brand-new temp prefix, run from
+*outside* the monorepo, on a brand-new fixture repo — never trusting the
+in-monorepo `node bin/pkr.js` run, which kept working throughout via
+workspace-hoisted `node_modules` and would have hidden both of these):
+
+1. **ESM bundle output couldn't run at all** — `esbuild --format=esm`
+   choked on `commander`'s internal `require("node:events")` with "Dynamic
+   require ... is not supported," a known esbuild limitation when bundling
+   a CJS dependency into an ESM target. Fixed by bundling to CJS instead
+   (`dist/index.cjs`, package `"type"` stays `"module"` — Node's ESM
+   loader can `import` a `.cjs` file directly for its side effects, which
+   is all `bin/pkr.js`-equivalent loading needs). This in turn broke
+   `@klerk/core`'s `createRequire(import.meta.url)` `ignore`-package
+   loader (`import.meta` is empty under esbuild's `cjs` format) — fixed
+   with esbuild's own documented workaround, an injected shim
+   (`scripts/import-meta-url-shim.js`) substituting a real `file://` URL
+   built from CJS's ambient `__filename` via `--define`/`--inject`.
+2. **`npm install -g` of the packed tarball crashed with `Cannot find
+   module 'ignore'`** — `createRequire(...)("ignore")` is a genuine
+   runtime `require()` call as far as esbuild's bundler is concerned (that
+   *is* the point of the `createRequire` pattern — it deliberately opts
+   out of static bundling), so `ignore` was never inlined into
+   `dist/index.cjs`, only referenced. It happened to resolve fine inside
+   the monorepo (hoisted to the repo root's `node_modules`) but not in a
+   real standalone install. Fixed by declaring `"ignore"` as an explicit
+   runtime `dependencies` entry of the published `klerk` package — the
+   one intentional external dependency of an otherwise fully
+   self-contained bundle. Confirmed by grepping the actual bundle output
+   for every remaining bare (non-`node:`) `require(...)` call after the
+   fix — `ignore` was the only one; nothing else was silently left
+   unbundled.
+
+Also caught by the same real-pack check, before either bug: `"files":
+["dist"]` would have shipped stale `tsc` build leftovers sitting in the
+same directory — `dist/index.test.js`, source maps, `.d.ts` files —
+tightened to the exact single artifact, `"files": ["dist/index.cjs",
+"LICENSE", "README.md"]`. `packages/cli/README.md` (new) is the npm-facing
+package page content — install/quick-start/license summary — separate
+from `ARCHITECTURE.md`/`PRODUCT_SPEC.md`'s audience. The root `LICENSE` is
+copied into `packages/cli/` by the `prepack` script (single source of
+truth, gitignored copy) since npm only auto-includes a `LICENSE` that
+lives inside the package directory being published, not one sitting at
+the monorepo root.
+
+**Verified for real, end to end**: `npm run build` (the unchanged, tsc-based
+dev path) and the full test suite (**215 tests**, unchanged) both still
+pass after every change above — the bundle/publish pipeline is additive,
+not a replacement for local dev/test. Then, separately: `npm pack` inside
+`packages/cli` → `npm install -g --prefix <fresh temp dir>` from the
+resulting `.tgz` (not from the workspace) → `pkr export` against a brand
+new fixture repo created outside the monorepo entirely, from a shell
+whose `PATH` only has the fresh install's `bin/` on it. Real extraction
+output (4 nodes, 8 files written), then a second real `pkr update` run
+confirming incremental re-sync also works from the standalone install.
+`npm install -g` added exactly 2 packages (`klerk` + `ignore`) — nothing
+else, confirming the bundle really is self-contained.
+
+Not yet done (next, per the user's explicit step order): an actual `npm
+publish` (deliberately deferred — no npm account exists yet).
+files. Both packages: **215 tests**.
