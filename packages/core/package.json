@@ -2,6 +2,17 @@
   "name": "@klerk/core",
   "version": "0.1.0",
   "description": "Klerk core engine: extraction, knowledge graph, rendering — the shared library behind the pkr CLI.",
+  "license": "Elastic-2.0",
+  "author": "stratoske",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stratoske-corne/klerk-pkr.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/stratoske-corne/klerk-pkr#readme",
+  "bugs": {
+    "url": "https://github.com/stratoske-corne/klerk-pkr/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

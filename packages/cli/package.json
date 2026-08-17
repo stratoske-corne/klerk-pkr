@@ -2,6 +2,17 @@
   "name": "@klerk/cli",
   "version": "0.1.0",
   "description": "pkr — the Klerk command-line tool. Generates a Project Knowledge Repository (.projectknowledge/) from a local software repository.",
+  "license": "Elastic-2.0",
+  "author": "stratoske",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stratoske-corne/klerk-pkr.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/stratoske-corne/klerk-pkr#readme",
+  "bugs": {
+    "url": "https://github.com/stratoske-corne/klerk-pkr/issues"
+  },
   "type": "module",
   "bin": {
     "pkr": "./bin/pkr.js"
