@@ -17,7 +17,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @klerk/core && npm run build -w klerk",
+    "build": "npm run build -w @klerk/core && npm run build -w @stratoske/klerk",
     "test": "npm run test --workspaces --if-present",
     "pkr": "node packages/cli/bin/pkr.js"
   },

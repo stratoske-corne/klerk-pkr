@@ -2040,10 +2040,12 @@ against the actual real-world reproduction that found it, not a
 synthetic case invented after the fact. `packages/core`: 184 tests / 22
 files. Both packages: **215 tests**.
 
-## 32. Packaging readiness — single-package bundle, license, identity (2026-08-17)
+## 32. Packaging readiness and first publish — single-package bundle, license, identity (2026-08-17)
 
-Pre-publish prep, user-driven and explicitly scoped to *readiness* only —
-no `npm publish` has been run; the user has no npm account yet.
+User-driven, in an explicit order: license → identity → packaging check →
+npm instructions. Started as readiness-only prep (the user had no npm
+account at the start of this section) and ended with a real publish once
+the account existed — see "Published for real," below.
 
 **License**: root `LICENSE` is the Elastic License 2.0 (`Elastic-2.0` SPDX
 id in all three `package.json`s) — free use/modify/redistribute, the one
@@ -2133,6 +2135,31 @@ confirming incremental re-sync also works from the standalone install.
 `npm install -g` added exactly 2 packages (`klerk` + `ignore`) — nothing
 else, confirming the bundle really is self-contained.
 
-Not yet done (next, per the user's explicit step order): an actual `npm
-publish` (deliberately deferred — no npm account exists yet).
+**Publish attempt #1 — a third real bug, found only by npm's own server,
+not by anything client-side**: the first `npm publish` (unscoped `klerk`)
+was rejected with `403 Package name too similar to existing package
+kleur` — npm's anti-typosquatting check, comparing against the popular
+`kleur` terminal-color library. No local check (registry existence check,
+`npm pack --dry-run`) could have caught this — it's a server-side policy
+decision, only surfaced by actually attempting the real publish. Fixed
+per npm's own suggested remedy: renamed the package to the scoped
+**`@stratoske/klerk`** (scopes are namespaced per npm username, so this
+name is unconditionally available — no separate reservation needed) and
+added `"publishConfig": { "access": "public" }` (scoped packages default
+to *private*, which requires a paid plan, unless access is explicitly
+declared public). The `pkr` command name is unaffected — package name and
+bin name are independent fields.
+
+**Published for real**: `npm publish` succeeded —
+[`@stratoske/klerk@0.1.0`](https://www.npmjs.com/package/@stratoske/klerk)
+is live on the public registry. Verified three ways, each a real network
+call rather than a local assumption: (1) `GET
+registry.npmjs.org/@stratoske/klerk` — the registry's own copy of the
+manifest, `fileCount: 4`, matching the local `npm pack --dry-run` exactly;
+(2) `npm install -g @stratoske/klerk` from the *actual* registry (not a
+local tarball) into a fresh temp prefix; (3) a real `pkr export` run
+against a brand-new fixture repo through that install — 4 nodes, 8 files
+written, exit code 0. This is the first artifact in the project's history
+that a stranger, anywhere, can install with one command
+(`npm install -g @stratoske/klerk`) and get a working `pkr`.
 files. Both packages: **215 tests**.

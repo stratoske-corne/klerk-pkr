@@ -8,7 +8,7 @@ read, separate from the code itself.
 ## Install
 
 ```bash
-npm install -g klerk
+npm install -g @stratoske/klerk
 ```
 
 This installs the `pkr` command globally.

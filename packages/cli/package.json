@@ -1,6 +1,9 @@
 {
-  "name": "klerk",
+  "name": "@stratoske/klerk",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "pkr — the Klerk command-line tool. Generates a Project Knowledge Repository (.projectknowledge/) from a local software repository.",
   "keywords": [
     "cli",
